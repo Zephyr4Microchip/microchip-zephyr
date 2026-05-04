@@ -70,6 +70,11 @@ tests:
     integration_platforms:
       - qemu_x86
       - mimxrt1060_evk/mimxrt1062/qspi
+      - pic32cz_ca80_cult
+  drivers.flash.common.intel_pflash_cfi01:
+    platform_allow: qemu_x86
+    integration_platforms:
+      - qemu_x86
   drivers.flash.common.pic32ck:
     filter: CONFIG_FLASH_HAS_DRIVER_ENABLED
     platform_allow:
