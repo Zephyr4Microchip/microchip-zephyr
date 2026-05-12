@@ -186,6 +186,12 @@
 			gclkperiph-src = "gclk1";
 			gclkperiph-en = <0>;
 		};
+
+		dac {
+			subsystem = <CLOCK_MCHP_GCLKPERIPH_ID_DAC>;
+			gclkperiph-src = "gclk1";
+			gclkperiph-en = <0>;
+		};
 	};
 };
 
@@ -311,5 +317,11 @@
 
 &rtc {
 	prescaler = <1024>;
+	status = "okay";
+};
+
+&dac {
+	pinctrl-0 = <&dac_default>;
+	pinctrl-names = "default";
 	status = "okay";
 };

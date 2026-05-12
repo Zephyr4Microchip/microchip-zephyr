@@ -60,4 +60,10 @@
 				 <PB5K_PTC_DS11>;
 		};
 	};
+
+	dac_default: dac_default {
+		group1 {
+			pinmux = <PA2B_DAC_VOUT>;
+		};
+	};
 };
