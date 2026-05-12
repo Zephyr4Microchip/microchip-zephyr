@@ -31,6 +31,7 @@
 		pwm-led0 = &pwm_led0;
 		sw0 = &button0;
 		rtc = &rtc;
+		sdhc0 = &sdhc1;
 	};
 
 	leds {
@@ -494,6 +495,19 @@ zephyr_udc0: &usb0 {
 	pinctrl-0 = <&usb_dc_default>;
 	pinctrl-names = "default";
 	status = "okay";
+};
+
+&sdhc1 {
+	compatible = "microchip,sdhc-g1";
+	pinctrl-0 = <&sdhc1_default>;
+	pinctrl-names = "default";
+	status = "okay";
+
+	disk {
+		compatible = "zephyr,sdmmc-disk";
+		disk-name = "SD";
+		status = "okay";
+	};
 };
 
 ext1_serial: &sercom0 {};
