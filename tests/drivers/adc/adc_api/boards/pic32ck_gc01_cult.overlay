@@ -1,0 +1,29 @@
+/*
+ * Copyright (c) 2026 Microchip Technology Inc.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+#include <dt-bindings/adc/adc.h>
+#include <dt-bindings/adc/mchp_pic32ck_gc_adc.h>
+
+/ {
+	zephyr,user {
+		io-channels = <&adc0 0>;
+	};
+};
+
+&adc0 {
+	#address-cells = <1>;
+	#size-cells = <0>;
+	status = "okay";
+
+	channel@0 {
+		reg = <0>;
+		zephyr,gain = "ADC_GAIN_1";
+		zephyr,reference = "ADC_REF_VDD_1";
+		zephyr,acquisition-time = <ADC_ACQ_TIME_DEFAULT>;
+		zephyr,resolution = <12>;
+		zephyr,input-positive = <MCHP_ADC_IVREF_1_2>;
+	};
+};
