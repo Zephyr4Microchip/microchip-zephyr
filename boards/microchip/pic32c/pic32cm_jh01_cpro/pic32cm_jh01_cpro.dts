@@ -28,6 +28,7 @@
 		led0 = &led0;
 		sw0 = &button0;
 		pwm-led0 = &pwm_led0;
+		rtc = &rtc;
 	};
 
 	leds {
@@ -305,5 +306,10 @@
 		aks-group = "NO_AKS_GROUP";
 	};
 
+	status = "okay";
+};
+
+&rtc {
+	prescaler = <1024>;
 	status = "okay";
 };
