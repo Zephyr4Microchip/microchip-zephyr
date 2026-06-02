@@ -12,6 +12,7 @@ ram: 512
 supported:
   - can
   - clock_control
+  - counter
   - entropy
   - flash
   - gpio
