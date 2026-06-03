@@ -65,8 +65,30 @@ LOG_MODULE_REGISTER(intc_mchp_eic_g1, CONFIG_INTC_LOG_LEVEL);
 
 #define EIC_LINES_PER_PORT 16
 
+/*
+ * Get port index from port ID for secure GPIO ports.
+ * Secure GPIO ports (portX_secure) have addresses offset by 0x1000 from non-secure,
+ * causing the GPIO driver to calculate port IDs >= MCHP_PORT_ID_MAX.
+ * Mask to get actual port index 0-3.
+ */
+#define GET_PORT_IDX(port_id) ((port_id) & (MCHP_PORT_ID_MAX - 1))
+
 #define TIMEOUT_VALUE_US 1000
 #define DELAY_US         2
+
+/* Special EIC line value to indicate NMI routing */
+#define EIC_LINE_NMI 0xFE
+
+/* NMI pin configuration from devicetree */
+#define NMI_PINS_PROP nmi_pins
+#if DT_INST_NODE_HAS_PROP(0, NMI_PINS_PROP)
+#define NMI_PINS_COUNT (DT_INST_PROP_LEN(0, NMI_PINS_PROP) / 2)
+static const uint8_t nmi_pins_array[] = DT_INST_PROP(0, NMI_PINS_PROP);
+#define NMI_PIN_PORT(idx) nmi_pins_array[(idx) * 2]
+#define NMI_PIN_NUM(idx)  nmi_pins_array[(idx) * 2 + 1]
+#else
+#define NMI_PINS_COUNT 0
+#endif
 
 struct mchp_eic_clock {
 	const struct device *clock_dev;
@@ -86,6 +108,13 @@ struct eic_mchp_dev_cfg {
 	void (*irq_config)(void);
 	/* Enable the low power mode to use the ULP32K clock for EIC */
 	bool low_power_mode;
+};
+
+/* NMI configuration state */
+struct mchp_eic_nmi_config {
+	uint8_t port_id;
+	uint8_t pin_num;
+	bool configured;
 };
 
 /* Device data structure for containing housekeeping structures */
@@ -110,7 +139,30 @@ struct eic_mchp_dev_data {
 	 */
 	uint16_t port_assigned_line[MCHP_PORT_ID_MAX];
 	uint32_t lock;
+	/* NMI configuration */
+	struct mchp_eic_nmi_config nmi;
 };
+
+/**
+ * Check if a given port and pin is connected to EIC NMI
+ *
+ * Returns true if the pin is an NMI pin, false otherwise
+ */
+static bool is_nmi_pin(int port, int pin)
+{
+#if NMI_PINS_COUNT > 0
+	port = GET_PORT_IDX(port);
+	for (int i = 0; i < NMI_PINS_COUNT; i++) {
+		if (NMI_PIN_PORT(i) == port && NMI_PIN_NUM(i) == pin) {
+			return true;
+		}
+	}
+#else
+	ARG_UNUSED(port);
+	ARG_UNUSED(pin);
+#endif
+	return false;
+}
 
 /**
  * Find the EIC (External Interrupt Controller) line corresponding to a given port and pin.
@@ -121,12 +173,21 @@ struct eic_mchp_dev_data {
  *
  * It returns the EIC line number corresponding to the given port and pin.
  *         If the pin is unsupported, returns INTC_LINE_FREE.
+ *         If the pin is an NMI pin, returns EIC_LINE_NMI.
  */
 
 static uint8_t find_eic_line_from_pin(int port, int pin)
 {
 	uint8_t eic_line = pin % EIC_LINES_PER_PORT;
 	uint32_t pin_mask = BIT(pin);
+
+	/* Check if this is an NMI pin first */
+	if (is_nmi_pin(port, pin)) {
+		return EIC_LINE_NMI;
+	}
+
+	/* Convert port ID to port index for secure GPIO ports */
+	port = GET_PORT_IDX(port);
 
 	switch (port) {
 	case MCHP_PORT_ID0:
@@ -228,6 +289,53 @@ static void disable_interrupt_line(eic_registers_t *regs, uint8_t eic_line)
 	regs->EIC_INTENCLR = BIT(eic_line);
 }
 
+#ifdef CONFIG_INTC_MCHP_EIC_G1_NMI
+/**
+ * Convert GPIO trigger type to NMI sense configuration
+ */
+static uint8_t get_nmi_sense(enum mchp_eic_trigger trig_type)
+{
+	switch (trig_type) {
+	case MCHP_EIC_RISING:
+		return EIC_NMICTRL_NMISENSE_RISE_Val;
+	case MCHP_EIC_FALLING:
+		return EIC_NMICTRL_NMISENSE_FALL_Val;
+	case MCHP_EIC_BOTH:
+		return EIC_NMICTRL_NMISENSE_BOTH_Val;
+	case MCHP_EIC_HIGH:
+		return EIC_NMICTRL_NMISENSE_HIGH_Val;
+	case MCHP_EIC_LOW:
+		return EIC_NMICTRL_NMISENSE_LOW_Val;
+	default:
+		return EIC_NMICTRL_NMISENSE_NONE_Val;
+	}
+}
+
+/**
+ * NMI handler for EIC NMI interrupts
+ * This is registered via z_arm_nmi_set_handler() when CONFIG_RUNTIME_NMI is enabled
+ */
+static struct eic_mchp_dev_data *nmi_eic_data;
+static eic_registers_t *nmi_eic_regs;
+extern void z_arm_nmi_set_handler(void (*pHandler)(void));
+
+static void eic_nmi_handler(void)
+{
+	/* Minimal handler - just clear flag and call callback */
+	if (nmi_eic_regs != NULL) {
+		nmi_eic_regs->EIC_NMIFLAG = EIC_NMIFLAG_NMI_Msk;
+	}
+
+	if (nmi_eic_regs != NULL && nmi_eic_data != NULL && nmi_eic_data->nmi.configured &&
+	    nmi_eic_data->eic_line_callback != NULL) {
+		uint8_t port_idx = GET_PORT_IDX(nmi_eic_data->nmi.port_id);
+		uint32_t pins = BIT(nmi_eic_data->nmi.pin_num);
+
+		nmi_eic_data->eic_line_callback(pins, nmi_eic_data->gpio_data[port_idx]);
+	}
+}
+#endif /* CONFIG_INTC_MCHP_EIC_G1_NMI */
+
 int eic_mchp_disable_interrupt(struct eic_config_params *eic_pin_config)
 {
 	const struct device *const dev = DEVICE_DT_INST_GET(0);
@@ -243,6 +351,29 @@ int eic_mchp_disable_interrupt(struct eic_config_params *eic_pin_config)
 		LOG_ERR("No EIC line associated with port %d pin %d", eic_pin_config->port_id,
 			eic_pin_config->pin_num);
 		return -ENOTSUP;
+	}
+
+	/* Handle NMI pin disable */
+	if (eic_line == EIC_LINE_NMI) {
+		eic_disable(eic_cfg->regs);
+		eic_sync_wait(eic_cfg->regs);
+
+		/* Disable NMI sensing */
+		eic_cfg->regs->EIC_NMICTRL = EIC_NMICTRL_NMISENSE(EIC_NMICTRL_NMISENSE_NONE_Val);
+
+		/* Clear any pending NMI flag */
+		eic_cfg->regs->EIC_NMIFLAG = EIC_NMIFLAG_NMI_Msk;
+
+		/* Disconnect pin from EIC peripheral */
+		eic_pin_config->port_addr->PORT_PINCFG[eic_pin_config->pin_num] &=
+			(uint8_t)(~PORT_PINCFG_PMUXEN(1));
+
+		eic_enable(eic_cfg->regs);
+		eic_sync_wait(eic_cfg->regs);
+
+		/* Clear NMI configuration */
+		eic_data->nmi.configured = false;
+		return 0;
 	}
 
 	/* If the line was never configured, just return success silently */
@@ -278,7 +409,8 @@ int eic_mchp_disable_interrupt(struct eic_config_params *eic_pin_config)
 	eic_data->line_busy &= ~BIT(eic_line);
 	eic_data->lines[eic_line].pin = INTC_PIN_DEFAULT_VAL;
 	eic_data->lines[eic_line].port = INTC_PORT_DEFAULT_VAL;
-	eic_data->port_assigned_line[eic_pin_config->port_id] &= ~BIT(eic_line);
+	/* Convert port ID to port index for secure GPIO ports */
+	eic_data->port_assigned_line[GET_PORT_IDX(eic_pin_config->port_id)] &= ~BIT(eic_line);
 
 	irq_unlock(eic_data->lock);
 	return 0;
@@ -293,12 +425,19 @@ uint32_t eic_mchp_interrupt_pending(uint8_t port_id)
 	uint8_t eic_line = 0;
 	/* Contains the bit mask where each set bit corresponds to a pending interrupt */
 	uint32_t ret_val = 0;
-
+	/* Convert port ID to port index for secure GPIO ports */
+	port_id = GET_PORT_IDX(port_id);
 	if (port_id >= MCHP_PORT_ID_MAX) {
 		LOG_ERR("Invalid port id passed");
 		return ret_val;
 	}
 	eic_data->lock = irq_lock();
+
+	/* Check NMI pending for this port */
+	if (eic_data->nmi.configured && GET_PORT_IDX(eic_data->nmi.port_id) == port_id &&
+	    (eic_cfg->regs->EIC_NMIFLAG & EIC_NMIFLAG_NMI_Msk)) {
+		ret_val |= BIT(eic_data->nmi.pin_num);
+	}
 	uint16_t port_flagged_lines = eic_data->port_assigned_line[port_id];
 
 	/* The port_flagged_lines contains the data of eic lines which are used for a particular
@@ -337,18 +476,75 @@ int eic_mchp_config_interrupt(struct eic_config_params *eic_pin_config)
 	uint8_t pmux_offset = pin / 2;
 	int eic_line = INTC_LINE_FREE;
 
-	eic_data->gpio_data[eic_pin_config->port_id] = eic_pin_config->gpio_data;
+	/* Convert port ID to port index for secure GPIO ports */
+	uint8_t port_idx = GET_PORT_IDX(eic_pin_config->port_id);
+
+	eic_data->gpio_data[port_idx] = eic_pin_config->gpio_data;
 	eic_data->eic_line_callback = eic_pin_config->eic_line_callback;
 
 	/* Find the eic line of a given pin of the given port. If no eic line associated or
 	 * eic line is busy, return failure
 	 */
 	eic_line = find_eic_line_from_pin(eic_pin_config->port_id, pin);
-	LOG_DBG("eic line of port %d pin %d = %d", eic_pin_config->port_id, pin, eic_line);
+	LOG_DBG("eic line of port %d pin %d = %d", port_idx, pin, eic_line);
 
 	if (eic_line == INTC_LINE_FREE) {
 		LOG_ERR("no associated eic line found");
 		return -ENOTSUP;
+	}
+
+	/* Handle NMI pin configuration separately */
+	if (eic_line == EIC_LINE_NMI) {
+#ifndef CONFIG_INTC_MCHP_EIC_G1_NMI
+		LOG_ERR("NMI pin requires CONFIG_INTC_MCHP_EIC_G1_NMI to be enabled");
+		return -ENOTSUP;
+#else
+		LOG_DBG("Configuring NMI for port %d pin %d", eic_pin_config->port_id, pin);
+
+		/* CRITICAL: Register handler and store data FIRST before any HW config */
+		eic_data->nmi.port_id = eic_pin_config->port_id;
+		eic_data->nmi.pin_num = pin;
+		eic_data->nmi.configured = true;
+		eic_data->gpio_data[port_idx] = eic_pin_config->gpio_data;
+		eic_data->eic_line_callback = eic_pin_config->eic_line_callback;
+		nmi_eic_data = eic_data;
+		nmi_eic_regs = eic_cfg->regs;
+		z_arm_nmi_set_handler(eic_nmi_handler);
+
+		eic_disable(eic_cfg->regs);
+		eic_sync_wait(eic_cfg->regs);
+
+		/* Disable NMI sensing first */
+		eic_cfg->regs->EIC_NMICTRL = EIC_NMICTRL_NMISENSE(EIC_NMICTRL_NMISENSE_NONE_Val);
+
+		/* Clear any pending NMI flag */
+		eic_cfg->regs->EIC_NMIFLAG = EIC_NMIFLAG_NMI_Msk;
+
+#if defined(CONFIG_ARM_TRUSTZONE_M)
+		/* On TrustZone devices, ensure NMI is configured as secure */
+		eic_cfg->regs->EIC_NONSEC &= ~EIC_NSCHK_NMI_Msk;
+		eic_cfg->regs->EIC_NSCHK &= ~EIC_NSCHK_NMI_Msk;
+#endif
+
+		/* Configure the pin as input and connect it to EIC peripheral (function A) */
+		eic_pin_config->port_addr->PORT_PINCFG[pin] |=
+			PORT_PINCFG_PMUXEN(1) | PORT_PINCFG_INEN(1);
+		eic_pin_config->port_addr->PORT_PMUX[pmux_offset] &=
+			((pin & 1) == 0) ? (~PORT_PMUX_PMUXE_Msk) : (~PORT_PMUX_PMUXO_Msk);
+
+		eic_enable(eic_cfg->regs);
+		eic_sync_wait(eic_cfg->regs);
+
+		/* Now enable NMI sensing - handler is already registered */
+		uint8_t nmi_sense = get_nmi_sense(eic_pin_config->trig_type);
+
+		eic_cfg->regs->EIC_NMICTRL =
+			EIC_NMICTRL_NMISENSE(nmi_sense) | EIC_NMICTRL_NMIFILTEN(1);
+
+		LOG_DBG("NMI configured: NMICTRL=0x%02x sense=%d", eic_cfg->regs->EIC_NMICTRL,
+			nmi_sense);
+		return 0;
+#endif /* CONFIG_INTC_MCHP_EIC_G1_NMI */
 	}
 
 	eic_data->lock = irq_lock();
@@ -358,16 +554,15 @@ int eic_mchp_config_interrupt(struct eic_config_params *eic_pin_config)
 		 * (e.g. switching from EDGE_RISING to EDGE_FALLING).
 		 */
 		if ((eic_data->lines[eic_line].pin != pin) ||
-		    (eic_data->lines[eic_line].port != eic_pin_config->port_id)) {
+		    (eic_data->lines[eic_line].port != port_idx)) {
 			irq_unlock(eic_data->lock);
 			LOG_ERR("EIC Line %d already owned by port %d pin %d "
 				"(requested port %d pin %d)",
 				eic_line, eic_data->lines[eic_line].port,
-				eic_data->lines[eic_line].pin, eic_pin_config->port_id, pin);
+				eic_data->lines[eic_line].pin, port_idx, pin);
 			return -EBUSY;
 		}
-		LOG_DBG("Reconfiguring EIC line %d (port %d pin %d)", eic_line,
-			eic_pin_config->port_id, pin);
+		LOG_DBG("Reconfiguring EIC line %d (port %d pin %d)", eic_line, port_idx, pin);
 	}
 
 	eic_disable(eic_cfg->regs);
@@ -395,8 +590,8 @@ int eic_mchp_config_interrupt(struct eic_config_params *eic_pin_config)
 	/*House keeping */
 	eic_data->line_busy |= BIT(eic_line);
 	eic_data->lines[eic_line].pin = pin;
-	eic_data->lines[eic_line].port = eic_pin_config->port_id;
-	eic_data->port_assigned_line[eic_pin_config->port_id] |= BIT(eic_line);
+	eic_data->lines[eic_line].port = port_idx;
+	eic_data->port_assigned_line[port_idx] |= BIT(eic_line);
 
 	irq_unlock(eic_data->lock);
 	return 0;
@@ -434,7 +629,12 @@ static int eic_mchp_init(const struct device *dev)
 
 #define EIC_MCHP_DATA_DEFN(n)        static struct eic_mchp_dev_data eic_mchp_data_##n
 #define EIC_MCHP_IRQ_HANDLER_DECL(n) static void eic_irq_connect_##n(void)
-#define EIC_MCHP_CREATE_HANDLERS(n)  LISTIFY(DT_NUM_IRQS(DT_DRV_INST(n)), EIC_MCHP_CB_INIT, (;),)
+/* Cap at 16 lines (secure EIC has 17 IRQs but only 16 EIC_LINE enums exist) */
+#define EIC_MCHP_MAX_LINES           16
+#define EIC_MCHP_NUM_LINES(n)                                                                      \
+	COND_CODE_1(UTIL_BOOL(DT_NUM_IRQS(DT_DRV_INST(n)) > EIC_MCHP_MAX_LINES), \
+		    (EIC_MCHP_MAX_LINES), (DT_NUM_IRQS(DT_DRV_INST(n))))
+#define EIC_MCHP_CREATE_HANDLERS(n) LISTIFY(EIC_MCHP_NUM_LINES(n), EIC_MCHP_CB_INIT, (;),)
 
 /* clang-format off */
 #define EIC_MCHP_CB_INIT(eic_line, _)							\
@@ -480,7 +680,7 @@ static int eic_mchp_init(const struct device *dev)
 	{                                                       \
 		/** Connect all IRQs for this instance */	\
 		LISTIFY(					\
-			DT_NUM_IRQS(DT_DRV_INST(n)),		\
+			EIC_MCHP_NUM_LINES(n),			\
 			EIC_MCHP_IRQ_CONNECT,			\
 			(),					\
 			n					\
