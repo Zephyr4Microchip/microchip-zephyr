@@ -31,6 +31,7 @@
 
 	aliases {
 		led0 = &led0;
+		led1 = &led1;
 		pwm-led0 = &pwm_led0;
 		sw0 = &button0;
 		sw1 = &button1;
@@ -47,6 +48,11 @@
 		led0: led_0 {
 			gpios = <&portd 20 GPIO_ACTIVE_LOW>;
 			label = "LED0";
+		};
+
+		led1: led_1 {
+			gpios = <&portb 25 GPIO_ACTIVE_LOW>;
+			label = "LED1";
 		};
 	};
 
