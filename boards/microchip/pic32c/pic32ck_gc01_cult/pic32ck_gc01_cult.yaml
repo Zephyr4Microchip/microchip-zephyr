@@ -23,6 +23,7 @@ supported:
   - pinctrl
   - pwm
   - rtc
+  - sdhc
   - spi
   - uart
   - usbd
