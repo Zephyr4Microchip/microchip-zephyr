@@ -24,6 +24,7 @@
 		zephyr,code-partition = &slot0_partition;
 		zephyr,flash-controller = &nvmctrl;
 		zephyr,entropy = &trng;
+		zephyr,sdhc = &sdhc1;
 	};
 
 	aliases {
@@ -297,6 +298,12 @@
 			gclkperiph-src = "gclk2";
 			gclkperiph-en = <0>;
 		};
+
+		sdhc1 {
+			subsystem = <CLOCK_MCHP_GCLKPERIPH_ID_SDHC1>;
+			gclkperiph-src = "gclk0";
+			gclkperiph-en = <1>;
+		};
 	};
 
 	mclkperiph: mclkperiph {
@@ -501,6 +508,7 @@ zephyr_udc0: &usb0 {
 	compatible = "microchip,sdhc-g1";
 	pinctrl-0 = <&sdhc1_default>;
 	pinctrl-names = "default";
+	auto-cmd23;
 	status = "okay";
 
 	disk {
