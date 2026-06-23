@@ -20,45 +20,38 @@ LOG_MODULE_REGISTER(sdhc_mchp_g1, CONFIG_SDHC_LOG_LEVEL);
 
 #define SDHC_REG(dev) ((sdhc_registers_t *)((const struct sdhc_mchp_cfg *)(dev)->config)->regs)
 
-#define SDHC_DESC_TABLE_ATTR_XFER_DATA (0x02U << 4U)
-#define SDHC_DESC_TABLE_ATTR_VALID     (1U << 0U)
-#define SDHC_DESC_TABLE_ATTR_END       (1UL << 1U)
-#define SDHC_DESC_TABLE_ATTR_INTR      (1U << 2U)
+#define SDHC_RESET_TIMEOUT_US         1000
+#define SDHC_CLOCK_STABLE_TIMEOUT_US  1000
+#define SDHC_CMD_IDLE_TIMEOUT_US      1000
+#define SDHC_XFER_DONE_TIMEOUT_US     100000
+#define SDHC_CMD_DEFAULT_TIMEOUT_MS   200
+#define SDHC_DATA_TIMEOUT_COUNTER_VAL 0xEU
 
-#define SDHC_RESET_TIMEOUT_US        1000
-#define SDHC_CLOCK_STABLE_TIMEOUT_US 1000
-#define SDHC_CMD_IDLE_TIMEOUT_US     1000
-#define SDHC_XFER_DONE_TIMEOUT_US    100000
-#define SDHC_CMD_DEFAULT_TIMEOUT_MS  200
-
-#define SDHC_ADMA2_DESC_MAX_BYTES 65536U
-
-#define SDHC_DATA_TIMEOUT_CNT_VAL 0xEU
-
-#define SDHC_DMASEL_ADMA2 2U
-
-#define SDHC_CCR_SDCLKFSEL_MASK   0xFFU
-#define SDHC_CCR_USDCLKFSEL_SHIFT 8U
+/* Convert SDHC max_blk_len bitfield value to actual byte length.
+ * returns Maximum block length in bytes, or 0 if reserved.
+ */
+#define SDHC_MAX_BLK_LEN_TO_BYTES(code)                                                            \
+	((code) == 0 ? 512 : (code) == 1 ? 1024 : (code) == 2 ? 2048 : 0)
 
 #define SDHC_XFER_STATUS_CMD_COMPLETED  (0x01U)
 #define SDHC_XFER_STATUS_DATA_COMPLETED (0x02U)
 #define SDHC_XFER_STATUS_CARD_INSERTED  (0x04U)
 #define SDHC_XFER_STATUS_CARD_REMOVED   (0x08U)
 
-#define CACHE_LINE_SIZE (16U)
+#define SDHC_ADMA_DESC_TABLE_ATTR_XFER_DATA (0x02U << 4U)
+#define SDHC_ADMA_DESC_TABLE_ATTR_VALID     (1U << 0U)
+#define SDHC_ADMA_DESC_TABLE_ATTR_END       (1UL << 1U)
+#define SDHC_ADMA_DESC_TABLE_ATTR_INTR      (1U << 2U)
 
-#define SDHC1_DMA_NUM_DESCR_LINES  (8U)
-#define SDHC1_BASE_CLOCK_FREQUENCY (120000000U)
-#define SDHC1_MAX_BLOCK_SIZE       (0x200U)
-#define SDHC1_DMA_DESC_TABLE_SIZE  (8U * SDHC1_DMA_NUM_DESCR_LINES)
-
-#define SDHC_BASECLKF_DEFAULT_DIV (2U)
-#define SDHC_BASECLKF_HZ_PER_MHZ  (1000000U)
-
-#define SDHC1_DMA_DESC_TABLE_SIZE_CACHE_ALIGN                                                      \
-	(SDHC1_DMA_DESC_TABLE_SIZE +                                                               \
-	 ((SDHC1_DMA_DESC_TABLE_SIZE % CACHE_LINE_SIZE)                                            \
-		  ? (CACHE_LINE_SIZE - (SDHC1_DMA_DESC_TABLE_SIZE % CACHE_LINE_SIZE))              \
+#define SDHC_ADMA2_DESC_MAX_BYTES  65536U
+#define CACHE_LINE_SIZE            (16U)
+#define SDHC_DMASEL_ADMA2          2U
+#define SDHC_ADMA2_NUM_DESCR_LINES (8U)
+#define SDHC_ADMA2_DESC_TABLE_SIZE (8U * SDHC_ADMA2_NUM_DESCR_LINES)
+#define SDHC_ADMA2_DESC_TABLE_SIZE_CACHE_ALIGN                                                     \
+	(SDHC_ADMA2_DESC_TABLE_SIZE +                                                              \
+	 ((SDHC_ADMA2_DESC_TABLE_SIZE % CACHE_LINE_SIZE)                                           \
+		  ? (CACHE_LINE_SIZE - (SDHC_ADMA2_DESC_TABLE_SIZE % CACHE_LINE_SIZE))             \
 		  : 0U))
 
 enum sdhc_speed_mode {
@@ -113,6 +106,8 @@ struct sdhc_adma_descr {
 struct sdhc_object {
 	bool is_cmd_in_progress;
 	bool is_data_in_progress;
+	bool cmdc_received;
+	bool trfc_received;
 	uint16_t error_status;
 };
 
@@ -120,6 +115,7 @@ struct sdhc_mchp_data {
 	struct k_mutex bus_mutex;
 	struct k_sem transfer_done;
 	struct sdhc_host_props props;
+	struct sdhc_command *cmd;
 	int sdhc_response[4];
 	volatile struct sdhc_object sdhc_obj;
 	struct sdhc_adma_descr *dma_desc_table;
@@ -135,12 +131,13 @@ struct mchp_sdhc_clock {
 struct sdhc_mchp_cfg {
 	const struct pinctrl_dev_config *pcfg;
 	uintptr_t regs;
-
 	struct mchp_sdhc_clock sdhc_clock;
-
 	int power_delay_ms;
 	uint32_t min_bus_freq;
 	uint32_t max_bus_freq;
+	uint16_t bus_width; /* Width of the SDIO bus */
+	bool auto_cmd12;
+	bool auto_cmd23;
 	void (*irq_config_func)(const struct device *dev);
 };
 
@@ -198,18 +195,21 @@ static inline bool sdhc_is_card_attached(const struct device *dev)
 {
 	sdhc_registers_t *sdhc_regs = SDHC_REG(dev);
 
-	return ((sdhc_regs->SDHC_PSR & SDHC_PSR_CARDDPL_Msk) == SDHC_PSR_CARDDPL_Msk) ? true
+	return ((sdhc_regs->SDHC_PSR & SDHC_PSR_CARDINS_Msk) == SDHC_PSR_CARDINS_Msk) ? true
 										      : false;
 }
 
 static void sdhc_set_blocksize(const struct device *dev, uint16_t block_size)
 {
+	struct sdhc_mchp_data *const dev_data = dev->data;
 	sdhc_registers_t *sdhc_regs = SDHC_REG(dev);
+	uint16_t max_block_size = 0U;
 
+	max_block_size = SDHC_MAX_BLK_LEN_TO_BYTES(dev_data->props.host_caps.max_blk_len);
 	if (block_size == 0U) {
 		block_size = 1U;
-	} else if (block_size > SDHC1_MAX_BLOCK_SIZE) {
-		block_size = SDHC1_MAX_BLOCK_SIZE;
+	} else if (block_size > max_block_size) {
+		block_size = max_block_size;
 	} else {
 		/* block_size is within the valid range; use as-is */
 	}
@@ -220,21 +220,28 @@ static void sdhc_set_blocksize(const struct device *dev, uint16_t block_size)
 static inline void sdhc_set_blockcount(const struct device *dev, uint16_t num_blocks)
 {
 	sdhc_registers_t *sdhc_regs = SDHC_REG(dev);
+	const struct sdhc_mchp_cfg *cfg = dev->config;
 
 	sdhc_regs->SDHC_BCR = num_blocks;
+	if (cfg->auto_cmd23) {
+		sdhc_regs->SDHC_SSAR = num_blocks;
+	}
 }
 
 static void sdhc_clock_enable(const struct device *dev)
 {
 	sdhc_registers_t *sdhc_regs = SDHC_REG(dev);
 
+	/* Start the internal clock */
 	sdhc_regs->SDHC_CCR |= SDHC_CCR_INTCLKEN_Msk;
 
+	/* wait for the internal clock to stabilize */
 	if (!WAIT_FOR(((sdhc_regs->SDHC_CCR & SDHC_CCR_INTCLKS_Msk) != 0U),
 		      SDHC_CLOCK_STABLE_TIMEOUT_US, k_busy_wait(1))) {
 		LOG_WRN("Internal clock stabilization timed out");
 	}
 
+	/* Enable the SD clock */
 	sdhc_regs->SDHC_CCR |= SDHC_CCR_SDCLKEN_Msk;
 }
 
@@ -248,8 +255,17 @@ static inline void sdhc_clock_disable(const struct device *dev)
 static void sdhc_set_transfermode(const struct device *dev, int opcode,
 				  struct sdhc_data_transfer_flags transfer_flags)
 {
+	const struct sdhc_mchp_cfg *cfg = dev->config;
 	sdhc_registers_t *sdhc_regs = SDHC_REG(dev);
 	uint16_t transfer_mode = 0U;
+	uint16_t auto_cmd_mode = 0U;
+
+	/* Multi block R/W: Determine auto command mode: CMD23 takes precedence over CMD12 */
+	if (cfg->auto_cmd23) {
+		auto_cmd_mode = SDHC_TMR_ACMDEN_CMD23;
+	} else if (cfg->auto_cmd12) {
+		auto_cmd_mode = SDHC_TMR_ACMDEN_CMD12;
+	}
 
 	switch (opcode) {
 	case SD_APP_SEND_SCR:
@@ -260,7 +276,7 @@ static void sdhc_set_transfermode(const struct device *dev, int opcode,
 
 	case SD_READ_MULTIPLE_BLOCK:
 		transfer_mode = (SDHC_TMR_DMAEN_ENABLE | SDHC_TMR_DTDSEL_Msk | SDHC_TMR_MSBSEL_Msk |
-				 SDHC_TMR_BCEN_Msk);
+				 SDHC_TMR_BCEN_Msk | auto_cmd_mode);
 		break;
 
 	case SD_WRITE_SINGLE_BLOCK:
@@ -268,7 +284,8 @@ static void sdhc_set_transfermode(const struct device *dev, int opcode,
 		break;
 
 	case SD_WRITE_MULTIPLE_BLOCK:
-		transfer_mode = (SDHC_TMR_DMAEN_ENABLE | SDHC_TMR_MSBSEL_Msk | SDHC_TMR_BCEN_Msk);
+		transfer_mode = (SDHC_TMR_DMAEN_ENABLE | SDHC_TMR_MSBSEL_Msk | SDHC_TMR_BCEN_Msk |
+				 auto_cmd_mode);
 		break;
 
 	case SDIO_RW_EXTENDED:
@@ -299,12 +316,18 @@ static int sdhc_dma_setup(const struct device *dev, uint8_t *buffer, int num_byt
 	uint32_t i = 0U;
 
 	if ((buffer == NULL) || (num_bytes <= 0)) {
+		LOG_ERR("Invalid buffer pointer or transfer size");
 		return -EINVAL;
 	}
 
-	if ((uint32_t)num_bytes > (SDHC1_DMA_NUM_DESCR_LINES * SDHC_ADMA2_DESC_MAX_BYTES)) {
+	if (dev_data->props.host_caps.adma_2_support == false) {
+		LOG_ERR("ADMA2 is not supported by this SDHC controller");
+		return -ENOTSUP;
+	}
+
+	if ((uint32_t)num_bytes > (SDHC_ADMA2_NUM_DESCR_LINES * SDHC_ADMA2_DESC_MAX_BYTES)) {
 		LOG_ERR("Transfer size %d exceeds chained ADMA2 capacity %u", num_bytes,
-			(unsigned int)(SDHC1_DMA_NUM_DESCR_LINES * SDHC_ADMA2_DESC_MAX_BYTES));
+			(unsigned int)(SDHC_ADMA2_NUM_DESCR_LINES * SDHC_ADMA2_DESC_MAX_BYTES));
 		return -ENOMEM;
 	}
 
@@ -314,7 +337,8 @@ static int sdhc_dma_setup(const struct device *dev, uint8_t *buffer, int num_byt
 	while (remaining > 0U) {
 		uint32_t chunk = (remaining > SDHC_ADMA2_DESC_MAX_BYTES) ? SDHC_ADMA2_DESC_MAX_BYTES
 									 : remaining;
-		uint16_t attr = SDHC_DESC_TABLE_ATTR_XFER_DATA | SDHC_DESC_TABLE_ATTR_VALID;
+		uint16_t attr =
+			SDHC_ADMA_DESC_TABLE_ATTR_XFER_DATA | SDHC_ADMA_DESC_TABLE_ATTR_VALID;
 
 		dev_data->dma_desc_table[i].address = addr;
 		/* ADMA2 encodes a length of 65536 as the value 0; the cast handles that. */
@@ -324,20 +348,25 @@ static int sdhc_dma_setup(const struct device *dev, uint8_t *buffer, int num_byt
 		addr += chunk;
 
 		if (remaining == 0U) {
-			attr |= SDHC_DESC_TABLE_ATTR_INTR | SDHC_DESC_TABLE_ATTR_END;
+			attr |= SDHC_ADMA_DESC_TABLE_ATTR_INTR | SDHC_ADMA_DESC_TABLE_ATTR_END;
 		}
 		dev_data->dma_desc_table[i].attribute = attr;
 		i++;
 	}
 
+#if defined(CONFIG_SOC_FAMILY_MICROCHIP_PIC32CK_SG_GC)
+	sdhc_regs->SDHC_ASAR = (uint32_t)(uintptr_t)&dev_data->dma_desc_table[0];
+#else
 	sdhc_regs->SDHC_ASAR[0] = (uint32_t)(uintptr_t)&dev_data->dma_desc_table[0];
+#endif
 	return 0;
 }
 
 static bool sdhc_set_clock(const struct device *dev, int speed)
 {
+	struct sdhc_mchp_data *const dev_data = dev->data;
 	sdhc_registers_t *sdhc_regs = SDHC_REG(dev);
-	uint32_t base_clk_frq = 0U;
+	uint32_t base_clk_freq_hz = 0U;
 	uint16_t divider = 0U;
 	uint32_t clk_mul = 0U;
 
@@ -347,42 +376,56 @@ static bool sdhc_set_clock(const struct device *dev, int speed)
 			      SDHC_CMD_IDLE_TIMEOUT_US, k_busy_wait(1))) {
 			LOG_WRN("SDHC bus did not become idle before clock change");
 		}
-
 		sdhc_regs->SDHC_CCR &= (uint16_t)(~SDHC_CCR_SDCLKEN_Msk);
 	}
 
-	base_clk_frq = (sdhc_regs->SDHC_CA0R & (SDHC_CA0R_BASECLKF_Msk)) >> SDHC_CA0R_BASECLKF_Pos;
-	if (base_clk_frq == 0U) {
-		base_clk_frq = (uint32_t)(SDHC1_BASE_CLOCK_FREQUENCY / SDHC_BASECLKF_DEFAULT_DIV);
-	} else {
-		base_clk_frq *= SDHC_BASECLKF_HZ_PER_MHZ;
-	}
-
-	clk_mul = (sdhc_regs->SDHC_CA1R & (SDHC_CA1R_CLKMULT_Msk)) >> SDHC_CA1R_CLKMULT_Pos;
+	base_clk_freq_hz = dev_data->props.host_caps.sd_base_clk * MHZ(1); /* Convert MHz to Hz */
+	clk_mul = dev_data->props.host_caps.clk_multiplier;
 	if (clk_mul == 0U) {
-		return false;
-	}
+		/* Calculate divider for divided clock mode */
+		/* F_SDCLK = (F_BASECLK /(2 * DIV) */
+		/* For a given F_SDCLK, DIV = [F_BASECLK /(F_SDCLK * 2)] */
+		/* Ensure output frequency is below the target threshold by rounding up */
+		/* the divider value */
 
-	divider = (uint16_t)((base_clk_frq * (clk_mul + 1U)) / speed);
-	if (divider > 0U) {
-		divider = divider - 1U;
-	}
+		uint32_t divisor = (speed * 2U);
 
-	sdhc_regs->SDHC_CCR |= SDHC_CCR_CLKGSEL_Msk;
+		divider = (uint16_t)DIV_ROUND_UP(base_clk_freq_hz, divisor);
+		sdhc_regs->SDHC_CCR &= (uint16_t)(~SDHC_CCR_CLKGSEL_Msk);
+	} else {
+		/* Calculate divider for programmable clock mode */
+		/* F_SDCLK = F_MULTCLK/(DIV+1), where F_MULTCLK = F_BASECLK x (CLKMULT+1) */
+		/* F_SDCLK = (F_BASECLK x (CLKMULT + 1))/(DIV + 1) */
+		/* For a given F_SDCLK, DIV = [(F_BASECLK x (CLKMULT + 1))/F_SDCLK] - 1 */
+		/* Ensure output frequency is below the target threshold by rounding up */
+		/* the divider value */
+
+		uint32_t multi_clk_freq_hz = (base_clk_freq_hz * (clk_mul + 1U));
+
+		divider = (uint16_t)DIV_ROUND_UP(multi_clk_freq_hz, speed);
+		if (divider > 0U) {
+			divider = divider - 1U;
+		}
+		/* Select Programmable Clock mode (MULTCLK is used to generate SDCLK) */
+		sdhc_regs->SDHC_CCR |= SDHC_CCR_CLKGSEL_Msk;
+	}
 
 	if (speed > SD_CLOCK_25MHZ) {
-		sdhc_regs->SDHC_HC1R |= SDHC_HC1R_HSEN_Msk;
+		/* Enable the high speed mode */
+		sdhc_set_speedmode(dev, SDHC_SPEED_MODE_HIGH);
 	} else {
-		sdhc_regs->SDHC_HC1R &= (uint8_t)(~SDHC_HC1R_HSEN_Msk);
+		/* clear the high speed mode */
+		sdhc_set_speedmode(dev, SDHC_SPEED_MODE_NORMAL);
 	}
 
 	if (((sdhc_regs->SDHC_HC1R & SDHC_HC1R_HSEN_Msk) != 0U) && (divider == 0U)) {
+		/* IP limitation, if high speed mode is active divider must be non zero */
 		divider = 1;
 	}
 
 	sdhc_regs->SDHC_CCR &= (uint16_t)(~(SDHC_CCR_SDCLKFSEL_Msk | SDHC_CCR_USDCLKFSEL_Msk));
-	sdhc_regs->SDHC_CCR |= SDHC_CCR_SDCLKFSEL((divider & SDHC_CCR_SDCLKFSEL_MASK)) |
-			       SDHC_CCR_USDCLKFSEL((divider >> SDHC_CCR_USDCLKFSEL_SHIFT));
+	sdhc_regs->SDHC_CCR |=
+		SDHC_CCR_SDCLKFSEL((divider & 0xFFU)) | SDHC_CCR_USDCLKFSEL((divider >> 8));
 
 	sdhc_regs->SDHC_CCR |= SDHC_CCR_INTCLKEN_Msk;
 
@@ -440,6 +483,8 @@ static void sdhc_send_command(const struct device *dev, uint8_t op_code, int arg
 	dev_data->sdhc_obj.is_cmd_in_progress = false;
 	dev_data->sdhc_obj.is_data_in_progress = false;
 	dev_data->sdhc_obj.error_status = 0U;
+	dev_data->sdhc_obj.cmdc_received = false;
+	dev_data->sdhc_obj.trfc_received = false;
 
 	normal_int_sig_enable = (SDHC_NISIER_CINS_Msk | SDHC_NISIER_CREM_Msk);
 
@@ -459,6 +504,9 @@ static void sdhc_send_command(const struct device *dev, uint8_t op_code, int arg
 	case SD_RSP_TYPE_R1b:
 		flags = (SDHC_CR_RESPTYP_48_BIT_BUSY_Val | SDHC_CR_CMDCCEN_Msk |
 			 SDHC_CR_CMDICEN_Msk);
+
+		/* Enable both CMDC (Command Complete) and TRFC (Transfer Complete) when handling */
+		/* R1b responses to avoid reading stale response data or causing interrupt storms */
 		normal_int_sig_enable |= SDHC_NISIER_TRFC_Msk;
 		break;
 
@@ -471,9 +519,8 @@ static void sdhc_send_command(const struct device *dev, uint8_t op_code, int arg
 		break;
 	}
 
-	if (resp_type != (uint8_t)SD_RSP_TYPE_R1b) {
-		normal_int_sig_enable |= SDHC_NISIER_CMDC_Msk;
-	}
+	/* Enable CMDC for all response types */
+	normal_int_sig_enable |= SDHC_NISIER_CMDC_Msk;
 
 	if (transfer_flags.is_data_present == true) {
 		dev_data->sdhc_obj.is_data_in_progress = true;
@@ -509,7 +556,7 @@ static void sdhc_init_module(const struct device *dev)
 	sdhc_regs->SDHC_NISTR = SDHC_NISTR_Msk;
 	sdhc_regs->SDHC_NISTER = SDHC_NISTER_Msk;
 	sdhc_regs->SDHC_EISTER = SDHC_EISTER_Msk;
-	sdhc_regs->SDHC_TCR = SDHC_TCR_DTCVAL(SDHC_DATA_TIMEOUT_CNT_VAL);
+	sdhc_regs->SDHC_TCR = SDHC_TCR_DTCVAL(SDHC_DATA_TIMEOUT_COUNTER_VAL);
 	sdhc_regs->SDHC_HC1R |= SDHC_HC1R_DMASEL(SDHC_DMASEL_ADMA2);
 	sdhc_regs->SDHC_PCR = (SDHC_PCR_SDBVSEL_3V3 | SDHC_PCR_SDBPWR_ON);
 
@@ -528,20 +575,84 @@ static int sdhc_wait_completion(struct sdhc_mchp_data *const dev_data, k_timeout
 	return -ETIMEDOUT;
 }
 
-static void sdhc_init_props(const struct device *dev)
+static int sdhc_init_props(const struct device *dev)
 {
 	struct sdhc_mchp_data *const dev_data = dev->data;
 	const struct sdhc_mchp_cfg *cfg = dev->config;
+	sdhc_registers_t *sdhc_regs = SDHC_REG(dev);
+	uint32_t base_clk_freq_Mhz = 0U;
+	uint32_t gclk_freq_hz = 0U;
+	int ret = 0;
+
+	uint32_t cap0 = sdhc_regs->SDHC_CA0R;
+	uint32_t cap1 = sdhc_regs->SDHC_CA1R;
 
 	memset(&dev_data->props, 0, sizeof(dev_data->props));
 	dev_data->props.f_min = cfg->min_bus_freq;
 	dev_data->props.f_max = cfg->max_bus_freq;
 	dev_data->props.power_delay = cfg->power_delay_ms;
-	dev_data->props.host_caps.vol_330_support = true;
-	dev_data->props.host_caps.sdma_support = true;
-	dev_data->props.host_caps.adma_2_support = true;
-	dev_data->props.host_caps.high_spd_support = true;
-	dev_data->props.host_caps.bus_8_bit_support = false;
+	dev_data->props.host_caps.timeout_clk_freq =
+		(cap0 & SDHC_CA0R_TEOCLKF_Msk) >> SDHC_CA0R_TEOCLKF_Pos;
+	dev_data->props.host_caps.timeout_clk_unit =
+		(cap0 & SDHC_CA0R_TEOCLKU_Msk) >> SDHC_CA0R_TEOCLKU_Pos;
+	/* Get base clock from hardware capability register */
+	base_clk_freq_Mhz = (cap0 & (SDHC_CA0R_BASECLKF_Msk)) >> SDHC_CA0R_BASECLKF_Pos;
+	if (base_clk_freq_Mhz == 0U) {
+		/* Fallback: get clock rate from GCLK control subsystem */
+		ret = clock_control_get_rate(cfg->sdhc_clock.clock_dev, cfg->sdhc_clock.gclk_sys,
+					     &gclk_freq_hz);
+		if (ret != 0) {
+			LOG_ERR("Failed to read glck rate/freq %u", gclk_freq_hz);
+			return ret;
+		}
+		base_clk_freq_Mhz = (gclk_freq_hz / 2);
+		base_clk_freq_Mhz = base_clk_freq_Mhz / MHZ(1); /* Convert Hz to MHz */
+	}
+	dev_data->props.host_caps.sd_base_clk = base_clk_freq_Mhz;
+
+#ifdef CONFIG_SOC_FAMILY_MICROCHIP_SAM_D5X_E5X
+	dev_data->props.host_caps.max_blk_len =
+		(cap0 & SDHC_CA0R_MAXBLKL_Msk) >> SDHC_CA0R_MAXBLKL_Pos;
+#else
+	dev_data->props.host_caps.max_blk_len = 0; /* 512 bytes */
+#endif
+
+	dev_data->props.host_caps.bus_8_bit_support = (bool)(cfg->bus_width == SDHC_BUS_WIDTH8BIT);
+	dev_data->props.host_caps.adma_2_support = (bool)(cap0 & SDHC_CA0R_ADMA2SUP_Msk);
+	dev_data->props.host_caps.high_spd_support = (bool)(cap0 & SDHC_CA0R_HSSUP_Msk);
+	dev_data->props.host_caps.sdma_support = (bool)(cap0 & SDHC_CA0R_SDMASUP_Msk);
+	dev_data->props.host_caps.suspend_res_support = (bool)(cap0 & SDHC_CA0R_SRSUP_Msk);
+	dev_data->props.host_caps.vol_330_support = (bool)(cap0 & SDHC_CA0R_V33VSUP_Msk);
+	dev_data->props.host_caps.vol_300_support = (bool)(cap0 & SDHC_CA0R_V30VSUP_Msk);
+	dev_data->props.host_caps.vol_180_support = false;
+	dev_data->props.host_caps.address_64_bit_support_v4 = false;
+	dev_data->props.host_caps.address_64_bit_support_v3 = false;
+	dev_data->props.host_caps.sdio_async_interrupt_support =
+		(bool)(cap0 & SDHC_CA0R_ASINTSUP_Msk);
+	dev_data->props.host_caps.slot_type = (cap0 & SDHC_CA0R_SLTYPE_Msk) >> SDHC_CA0R_SLTYPE_Pos;
+
+	/* UHS related props */
+	dev_data->props.host_caps.sdr50_support = false;
+	dev_data->props.host_caps.sdr104_support = false;
+	dev_data->props.host_caps.ddr50_support = false;
+	dev_data->props.host_caps.uhs_2_support = false;
+	dev_data->props.host_caps.drv_type_a_support = false;
+	dev_data->props.host_caps.drv_type_c_support = false;
+	dev_data->props.host_caps.drv_type_d_support = false;
+	dev_data->props.host_caps.retune_timer_count = 0;
+	dev_data->props.host_caps.sdr50_needs_tuning = false;
+	dev_data->props.host_caps.retuning_mode = 0;
+
+	dev_data->props.host_caps.clk_multiplier =
+		(cap1 & SDHC_CA1R_CLKMULT_Msk) >> SDHC_CA1R_CLKMULT_Pos;
+	dev_data->props.host_caps.adma3_support = false;
+	dev_data->props.host_caps.vdd2_180_support = false;
+	dev_data->props.bus_4_bit_support = (bool)(cfg->bus_width == SDHC_BUS_WIDTH4BIT);
+	dev_data->props.hs200_support = false;
+	dev_data->props.hs400_support = false;
+	dev_data->props.is_spi = false;
+
+	return 0;
 }
 
 static uint8_t sdhc_resp_type(struct sdhc_command *cmd)
@@ -590,10 +701,6 @@ static void sdhc_mchp_isr(const struct device *dev)
 
 	dev_data->sdhc_obj.error_status |= eistr;
 
-	if ((nistr & SDHC_NISTR_TRFC_Msk) != 0U) {
-		dev_data->sdhc_obj.error_status &= (uint16_t)(~SDHC_EISTR_DATTEO_Msk);
-	}
-
 	if ((nistr & SDHC_NISTR_CINS_Msk) != 0U) {
 		xfer_status |= SDHC_XFER_STATUS_CARD_INSERTED;
 	}
@@ -603,16 +710,38 @@ static void sdhc_mchp_isr(const struct device *dev)
 	}
 
 	if (dev_data->sdhc_obj.is_cmd_in_progress == true) {
-		if ((nistr & (SDHC_NISTR_CMDC_Msk | SDHC_NISTR_TRFC_Msk | SDHC_NISTR_ERRINT_Msk)) !=
-		    0U) {
-			if ((nistr & SDHC_NISTR_ERRINT_Msk) != 0U) {
-				if (((eistr & (SDHC_EISTR_CMDTEO_Msk | SDHC_EISTR_CMDCRC_Msk |
-					       SDHC_EISTR_CMDEND_Msk | SDHC_EISTR_CMDIDX_Msk))) !=
-				    0U) {
-					sdhc_reset_error(dev, SDHC_RESET_CMD);
-				}
-			}
+		bool cmd_done = false;
 
+		/* Track which interrupts have fired */
+		if ((nistr & SDHC_NISTR_CMDC_Msk) != 0U) {
+			dev_data->sdhc_obj.cmdc_received = true;
+		}
+
+		if ((nistr & SDHC_NISTR_TRFC_Msk) != 0U) {
+			dev_data->sdhc_obj.trfc_received = true;
+		}
+
+		/*
+		 * R1b: wait for both CMDC and TRFC before completing.
+		 * This handles the case where TRFC fires before CMDC (in devices like PIC32CK
+		 * SG/GC). Non-R1b: complete on either CMDC or TRFC.
+		 */
+		if (sdhc_resp_type(dev_data->cmd) == SD_RSP_TYPE_R1b) {
+			cmd_done = (dev_data->sdhc_obj.cmdc_received &&
+				    dev_data->sdhc_obj.trfc_received);
+		} else {
+			/* Non R1b: Complete on CMDC or TRFC */
+			cmd_done = (dev_data->sdhc_obj.cmdc_received ||
+				    dev_data->sdhc_obj.trfc_received);
+		}
+
+		if ((nistr & SDHC_NISTR_ERRINT_Msk) != 0U) {
+			if ((eistr & (SDHC_EISTR_CMDTEO_Msk | SDHC_EISTR_CMDCRC_Msk |
+				      SDHC_EISTR_CMDEND_Msk | SDHC_EISTR_CMDIDX_Msk)) != 0U) {
+				sdhc_reset_error(dev, SDHC_RESET_CMD);
+			}
+		}
+		if (cmd_done == true) {
 			dev_data->sdhc_obj.is_cmd_in_progress = false;
 			xfer_status |= SDHC_XFER_STATUS_CMD_COMPLETED;
 		}
@@ -626,6 +755,13 @@ static void sdhc_mchp_isr(const struct device *dev)
 					      SDHC_EISTR_DATEND_Msk)) != 0U) {
 					sdhc_reset_error(dev, SDHC_RESET_DAT);
 				}
+			}
+
+			if ((nistr & SDHC_NISTR_TRFC_Msk) != 0U) {
+				/* Clear the data timeout error as transfer complete has higher */
+				/* priority */
+				dev_data->sdhc_obj.error_status &=
+					(uint16_t)(~SDHC_EISTR_DATTEO_Msk);
 			}
 
 			dev_data->sdhc_obj.is_data_in_progress = false;
@@ -651,6 +787,7 @@ static int sdhc_mchp_request(const struct device *dev, struct sdhc_command *cmd,
 	k_timeout_t cmd_timeout;
 
 	__ASSERT_NO_MSG(cmd != NULL);
+	dev_data->cmd = cmd;
 
 	if (cmd->timeout_ms == SDHC_TIMEOUT_FOREVER) {
 		cmd_timeout = K_FOREVER;
@@ -769,6 +906,19 @@ static int sdhc_mchp_set_io(const struct device *dev, struct sdhc_io *ios)
 		}
 	}
 
+	switch (ios->timing) {
+	case SDHC_TIMING_LEGACY:
+		sdhc_set_speedmode(dev, SDHC_SPEED_MODE_NORMAL);
+		break;
+	case SDHC_TIMING_HS:
+		sdhc_set_speedmode(dev, SDHC_SPEED_MODE_HIGH);
+		break;
+	default:
+		/* UHS-I modes are not supported */
+		LOG_ERR("Failed to set timing mode to %u", ios->timing);
+		return -ENOTSUP;
+	}
+
 	return 0;
 }
 
@@ -821,22 +971,31 @@ static int sdhc_mchp_init(const struct device *dev)
 		return -ENODEV;
 	}
 
-	ret = clock_control_on(cfg->sdhc_clock.clock_dev, cfg->sdhc_clock.mclk_sys);
-	if ((ret != 0) && (ret != -EALREADY)) {
-		LOG_ERR("Failed to enable MCLK: %d", ret);
-		return ret;
+	if (CLOCK_CONTROL_STATUS_ON !=
+	    clock_control_get_status(cfg->sdhc_clock.clock_dev, cfg->sdhc_clock.mclk_sys)) {
+		ret = clock_control_on(cfg->sdhc_clock.clock_dev, cfg->sdhc_clock.mclk_sys);
+		if ((ret != 0) && (ret != -EALREADY)) {
+			LOG_ERR("Failed to enable MCLK: %d", ret);
+			return ret;
+		}
 	}
 
-	ret = clock_control_on(cfg->sdhc_clock.clock_dev, cfg->sdhc_clock.gclk_sys);
-	if ((ret != 0) && (ret != -EALREADY)) {
-		LOG_ERR("Failed to enable GCLK: %d", ret);
-		return ret;
+	if (CLOCK_CONTROL_STATUS_ON !=
+	    clock_control_get_status(cfg->sdhc_clock.clock_dev, cfg->sdhc_clock.gclk_sys)) {
+		ret = clock_control_on(cfg->sdhc_clock.clock_dev, cfg->sdhc_clock.gclk_sys);
+		if ((ret != 0) && (ret != -EALREADY)) {
+			LOG_ERR("Failed to enable GCLK: %d", ret);
+			return ret;
+		}
 	}
 
-	ret = clock_control_on(cfg->sdhc_clock.clock_dev, cfg->sdhc_clock.gclk_slow_sys);
-	if ((ret != 0) && (ret != -EALREADY)) {
-		LOG_ERR("Failed to enable slow GCLK: %d", ret);
-		return ret;
+	if (CLOCK_CONTROL_STATUS_ON !=
+	    clock_control_get_status(cfg->sdhc_clock.clock_dev, cfg->sdhc_clock.gclk_slow_sys)) {
+		ret = clock_control_on(cfg->sdhc_clock.clock_dev, cfg->sdhc_clock.gclk_slow_sys);
+		if ((ret != 0) && (ret != -EALREADY)) {
+			LOG_ERR("Failed to enable slow GCLK: %d", ret);
+			return ret;
+		}
 	}
 
 	if (cfg->pcfg != NULL) {
@@ -847,12 +1006,16 @@ static int sdhc_mchp_init(const struct device *dev)
 		}
 	}
 
+	ret = sdhc_init_props(dev);
+	if (ret < 0) {
+		LOG_ERR("Failed to read and initialize SDHC host properties: %d", ret);
+		return ret;
+	}
+
 	sdhc_init_module(dev);
 	k_mutex_init(&dev_data->bus_mutex);
 	k_sem_init(&dev_data->transfer_done, 0, 1);
 	cfg->irq_config_func(dev);
-
-	sdhc_init_props(dev);
 
 	return 0;
 }
@@ -874,7 +1037,7 @@ static DEVICE_API(sdhc, sdhc_mchp_api) = {
  */
 #define SDHC_MCHP_DATA_DEFN(n)                                                                     \
 	static struct sdhc_adma_descr __aligned(32)                                                \
-	sdhc_mchp_dma_desc_##n[(SDHC1_DMA_DESC_TABLE_SIZE_CACHE_ALIGN / 8U)];                      \
+	sdhc_mchp_dma_desc_##n[(SDHC_ADMA2_DESC_TABLE_SIZE_CACHE_ALIGN / 8U)];                     \
 	static struct sdhc_mchp_data sdhc_mchp_data_##n = {                                        \
 		.dma_desc_table = sdhc_mchp_dma_desc_##n,                                          \
 		.sdhc_obj =                                                                        \
@@ -882,6 +1045,8 @@ static DEVICE_API(sdhc, sdhc_mchp_api) = {
 				.error_status = 0U,                                                \
 				.is_cmd_in_progress = false,                                       \
 				.is_data_in_progress = false,                                      \
+				.cmdc_received = false,                                            \
+				.trfc_received = false,                                            \
 			},                                                                         \
 	}
 
@@ -899,6 +1064,9 @@ static DEVICE_API(sdhc, sdhc_mchp_api) = {
 		.power_delay_ms = DT_INST_PROP(n, power_delay_ms),                                 \
 		.min_bus_freq = DT_INST_PROP(n, min_bus_freq),                                     \
 		.max_bus_freq = DT_INST_PROP(n, max_bus_freq),                                     \
+		.auto_cmd12 = DT_INST_PROP(n, auto_cmd12),                                         \
+		.auto_cmd23 = DT_INST_PROP(n, auto_cmd23),                                         \
+		.bus_width = DT_INST_PROP(n, bus_width),                                           \
 		.irq_config_func = sdhc_mchp_irq_config_##n,                                       \
 	}
 
