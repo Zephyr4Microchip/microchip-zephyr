@@ -18,6 +18,7 @@ supported:
   - i2c
   - netif:eth
   - pinctrl
+  - sdhc
   - spi
   - uart
   - usbd
