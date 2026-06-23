@@ -1,0 +1,88 @@
+/*
+ * Copyright (c) 2026 Microchip Technology Inc.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+/*
+ * SD Card SPI Mode Configuration for PIC32CK GC01 Curiosity Ultra
+ *
+ * This overlay supports connecting an IO1 Xplained Pro board to either
+ * EXT1 or EXT2 header for SD card access via SPI.
+ *
+ * Both headers share SERCOM2 for SPI data lines, only the CS pin differs:
+ *   EXT1: CS on PC14
+ *   EXT2: CS on PC23
+ *
+ * To switch between headers:
+ *   1. Change pinctrl-0 to the desired configuration
+ *   2. Update cs-gpios to match
+ *
+ * Default configuration: EXT1
+ *
+ * Usage:
+ *   west build -p always -b pic32ck_gc01_cult samples\subsys\fs\fs_sample \
+ *     -DDTC_OVERLAY_FILE=boards/mchp_pic32ck_gc01_cult_sdhc_spi.overlay
+ */
+
+&portc {
+	status = "okay";
+};
+
+&sdhc0 {
+	status = "disabled";
+
+	disk {
+		status = "disabled";
+	};
+};
+
+&pinctrl {
+	/* EXT1 header pin mapping */
+	sdhc_spi_ext1: sercom2_spi_ext1 {
+		group1 {
+			pinmux = <PC15C_SERCOM2_PAD0>,
+				 <PC16C_SERCOM2_PAD1>,
+				 <PC17C_SERCOM2_PAD2>;
+		};
+	};
+
+	/* EXT2 header pin mapping */
+	sdhc_spi_ext2: sercom2_spi_ext2 {
+		group1 {
+			pinmux = <PC15C_SERCOM2_PAD0>,
+				 <PC16C_SERCOM2_PAD1>,
+				 <PC17C_SERCOM2_PAD2>;
+		};
+	};
+};
+
+&sercom2 {
+	status = "okay";
+
+	/* EXT1: sdhc_spi_ext1, EXT2: sdhc_spi_ext2 */
+	pinctrl-0 = <&sdhc_spi_ext1>;
+	pinctrl-names = "default";
+
+	dipo = <2>;
+	dopo = <0>;
+
+	/* EXT1 CS pin */
+	cs-gpios = <&portc 14 GPIO_ACTIVE_LOW>;
+
+	/* EXT2 CS pin (uncomment and comment above to use EXT2) */
+	/* cs-gpios = <&portc 23 GPIO_ACTIVE_LOW>; */
+
+	sdhc_spi0: sdhc@0 {
+		compatible = "zephyr,sdhc-spi-slot";
+		reg = <0>;
+		status = "okay";
+		spi-max-frequency = <48000000>;
+
+		sdmmc {
+			compatible = "zephyr,sdmmc-disk";
+			disk-name = "SD";
+			status = "okay";
+		};
+	};
+};

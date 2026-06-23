@@ -1,0 +1,135 @@
+/*
+ * Copyright (c) 2026 Microchip Technology Inc.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+/*
+ * SD Card SPI Mode Configuration for SAM E54 Xplained Pro
+ *
+ * This overlay supports connecting an IO1 Xplained Pro board to any of the
+ * three EXT headers (EXT1, EXT2, or EXT3) for SD card access via SPI.
+ *
+ * IMPORTANT: EXT1 uses SERCOM4, while EXT2 and EXT3 share SERCOM6.
+ *
+ * To select your configuration:
+ * 1. Uncomment the pinctrl definition for your chosen EXT header
+ * 2. Uncomment the corresponding SERCOM section (sercom4 for EXT1,
+ *    sercom6 for EXT2/EXT3)
+ * 3. Make sure only ONE SERCOM section is enabled at a time
+ *
+ * Default: EXT2 (SERCOM6)
+ *
+ * Usage:
+ *   west build -p always -b sam_e54_xpro samples\subsys\fs\fs_sample \
+ *     -DDTC_OVERLAY_FILE=boards/mchp_sam_e54_xpro_sdhc_spi.overlay
+ */
+
+&sdhc0 {
+	status = "disabled";
+
+	disk {
+		status = "disabled";
+	};
+};
+
+&pinctrl {
+	/* EXT1 header */
+	sdhc_spi_ext1: sercom4_spi_ext1 {
+		group1 {
+			pinmux = <PB27D_SERCOM4_PAD0>,
+				 <PB26D_SERCOM4_PAD1>,
+				 <PB29D_SERCOM4_PAD3>;
+		};
+	};
+
+	/* EXT2 Header */
+	sdhc_spi_ext2: sercom6_spi_ext2 {
+		group1 {
+			pinmux = <PC4C_SERCOM6_PAD0>,
+				 <PC5C_SERCOM6_PAD1>,
+				 <PC7C_SERCOM6_PAD3>;
+		};
+	};
+
+	/* EXT3 Header */
+	sdhc_spi_ext3: sercom6_spi_ext3 {
+		group1 {
+			pinmux = <PC4C_SERCOM6_PAD0>,
+				 <PC5C_SERCOM6_PAD1>,
+				 <PC7C_SERCOM6_PAD3>;
+		};
+	};
+};
+
+/*
+ * ============================================================================
+ * EXT1 Configuration (SERCOM4)
+ * Uncomment this section and comment out the EXT2/EXT3 section below
+ * ============================================================================
+ */
+
+/*
+ *&sercom4 {
+ *	compatible = "microchip,sercom-g1-spi";
+ *	status = "okay";
+ *	#address-cells = <1>;
+ *	#size-cells = <0>;
+ *	pinctrl-0 = <&sdhc_spi_ext1>;
+ *	pinctrl-names = "default";
+ *	dipo = <3>;
+ *	dopo = <0>;
+ *	cs-gpios = <&portb 28 GPIO_ACTIVE_LOW>;
+ *	sdhc_spi0: sdhc@0 {
+ *		compatible = "zephyr,sdhc-spi-slot";
+ *		reg = <0>;
+ *		spi-max-frequency = <16000000>;
+ *		status = "okay";
+ *
+ *		disk {
+ *			compatible = "zephyr,sdmmc-disk";
+ *			disk-name = "SD";
+ *			status = "okay";
+ *		};
+ *	};
+ *};
+ */
+
+/*
+ * ============================================================================
+ * EXT2/EXT3 Configuration (SERCOM6)
+ * Default: EXT2 enabled
+ * To use EXT3: change pinctrl-0 to <&sdhc_spi_ext3> and cs-gpios to portc 14
+ * ============================================================================
+ */
+
+&sercom6 {
+	status = "okay";
+
+	/* EXT2: use sdhc_spi_ext2, cs-gpios portc 6 */
+	/* EXT3: use sdhc_spi_ext3, cs-gpios portc 14 */
+	pinctrl-0 = <&sdhc_spi_ext2>;
+	pinctrl-names = "default";
+
+	dipo = <3>;
+	dopo = <0>;
+
+	/* EXT2 CS pin */
+	cs-gpios = <&portc 6 GPIO_ACTIVE_LOW>;
+
+	/* EXT3 CS pin - uncomment and comment EXT2 line above */
+	/* cs-gpios = <&portc 14 GPIO_ACTIVE_LOW>; */
+
+	sdhc_spi0: sdhc@0 {
+		compatible = "zephyr,sdhc-spi-slot";
+		reg = <0>;
+		spi-max-frequency = <16000000>;
+		status = "okay";
+
+		disk {
+			compatible = "zephyr,sdmmc-disk";
+			disk-name = "SD";
+			status = "okay";
+		};
+	};
+};
