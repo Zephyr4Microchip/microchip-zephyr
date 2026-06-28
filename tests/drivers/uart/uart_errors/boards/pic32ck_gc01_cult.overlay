@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-/* Connect PB21 to PD13 and PB22 to PD14 */
+/* Connect PB22 to PD13 and PB21 to PD14 */
 
 dut: &sercom3 {
 	compatible = "microchip,sercom-g1-uart";
