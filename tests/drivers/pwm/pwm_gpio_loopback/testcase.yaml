@@ -56,10 +56,14 @@ tests:
       - cyw920829m2evk_02/cyw20829b0lkml
       - kit_pse84_eval/pse846gps2dbzc4a/m33
       - kit_pse84_eval/pse846gps2dbzc4a/m55
+
   drivers.pwm.gpio_loopback_tc0.mchp:
-    extra_args: DTC_OVERLAY_FILE="boards/microchip/sam_e54_xpro_tc0.overlay"
+    extra_args:
+      - platform:sam_e54_xpro/atsame54p20a:"DTC_OVERLAY_FILE=boards/microchip/sam_e54_xpro_tc0.overlay"
+      - platform:pic32cx_sg41_cult/pic32cx1025sg41128:"DTC_OVERLAY_FILE=boards/microchip/pic32cx_sg41_cult_tc0.overlay"
     platform_allow:
       - sam_e54_xpro
+      - pic32cx_sg41_cult
 
   drivers.pwm.gpio_loopback_tc1.mchp:
     extra_args: DTC_OVERLAY_FILE="boards/microchip/sam_e54_xpro_tc1.overlay"
