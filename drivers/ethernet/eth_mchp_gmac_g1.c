@@ -124,7 +124,6 @@ struct gmac_desc_list {
 struct gmac_queue {
 	struct gmac_desc_list rx_desc_list;
 	struct gmac_desc_list tx_desc_list;
-	struct k_mutex tx_mutex;
 	struct k_sem tx_desc_sem;
 	struct net_buf **rx_frag_list;
 	struct ring_buf tx_frag_rb;
@@ -287,7 +286,6 @@ static int gmac_queue_init(gmac_registers_t *gmac_regs, struct gmac_queue *queue
 	}
 
 	gmac_tx_descriptors_init(gmac_regs, queue);
-	k_mutex_init(&queue->tx_mutex);
 	k_sem_init(&queue->tx_desc_sem, queue->tx_desc_list.len - 1, queue->tx_desc_list.len - 1);
 
 	gmac_regs->GMAC_DCFGR =
@@ -493,52 +491,6 @@ static int gmac_init(const struct device *dev, gmac_registers_t *gmac)
 
 	return gmac_set_phy_connection_type(gmac);
 }
-
-static void gmac_link_configure(gmac_registers_t *gmac, bool full_duplex, bool speed_100M)
-{
-	uint32_t val = gmac->GMAC_NCFGR;
-
-	val &= ~(GMAC_NCFGR_FD_Msk | GMAC_NCFGR_SPD_Msk);
-	val |= full_duplex ? GMAC_NCFGR_FD_Msk : 0;
-	val |= speed_100M ? GMAC_NCFGR_SPD_Msk : 0;
-	gmac->GMAC_NCFGR = val;
-	gmac->GMAC_NCR |= (GMAC_NCR_RXEN_Msk | GMAC_NCR_TXEN_Msk);
-}
-
-#if defined(CONFIG_NET_STATISTICS_ETHERNET)
-static void gmac_get_stats(gmac_registers_t *gmac, struct net_stats_eth *eth_stats)
-{
-	uint32_t err_ae = gmac->GMAC_AE;    /* Alignment Error */
-	uint32_t err_ofr = gmac->GMAC_OFR;  /* Over Length Frames */
-	uint32_t err_fcs = gmac->GMAC_FCSE; /* FCS Error */
-	uint32_t err_scf = gmac->GMAC_SCF;  /* Single Collision */
-	uint32_t err_mcf = gmac->GMAC_MCF;  /* Multiple Collision */
-	uint32_t err_ecf = gmac->GMAC_EC;   /* Excess Collision */
-
-	eth_stats->collisions += err_scf + err_mcf + err_ecf;
-	eth_stats->csum.rx_csum_offload_errors += gmac->GMAC_FCSE;
-	eth_stats->csum.rx_csum_offload_good = 0;
-	eth_stats->error_details.rx_align_errors += err_ae;
-	eth_stats->error_details.rx_long_length_errors += err_ofr;
-	eth_stats->error_details.rx_crc_errors += err_fcs;
-	eth_stats->error_details.rx_length_errors += err_ofr;
-	eth_stats->errors.rx += gmac->GMAC_UCE + gmac->GMAC_TCE + gmac->GMAC_IHCE + gmac->GMAC_ROE +
-				gmac->GMAC_RRE + err_ae + gmac->GMAC_RSE + gmac->GMAC_LFFE +
-				err_fcs + gmac->GMAC_JR + err_ofr + gmac->GMAC_UFR;
-	eth_stats->errors.tx += err_scf + err_mcf + err_ecf + gmac->GMAC_TUR + gmac->GMAC_CSE;
-	eth_stats->multicast.rx += gmac->GMAC_MFR;
-	eth_stats->multicast.tx += gmac->GMAC_MFT;
-	eth_stats->tx_dropped = 0;
-	eth_stats->tx_restart_queue = 0;
-	eth_stats->tx_timeout_count = 0;
-	eth_stats->unknown_protocol = 0;
-
-#ifdef CONFIG_NET_STATISTICS_ETHERNET_VENDOR
-	eth_stats->vendor.key = NULL;
-	eth_stats->vendor.value = 0;
-#endif /* CONFIG_NET_STATISTICS_ETHERNET_VENDOR */
-}
-#endif /* CONFIG_NET_STATISTICS_ETHERNET */
 
 static bool gmac_check_queue_for_data(struct gmac_desc_list *rx_desc_list)
 {
@@ -796,29 +748,12 @@ static int eth_mchp_send(const struct device *dev, struct net_pkt *pkt)
 	uint8_t free_desc_cnt = 0;
 	int8_t head_desc_index = 0;
 
-	if (pkt == NULL) {
-#if defined(CONFIG_NET_STATISTICS_ETHERNET)
-		dev_data->stats.errors.tx++;
-#endif /* CONFIG_NET_STATISTICS_ETHERNET */
-
-		return -EIO;
-	}
-
-	if (pkt->frags == NULL) {
-#if defined(CONFIG_NET_STATISTICS_ETHERNET)
-		dev_data->stats.errors.tx++;
-#endif /* CONFIG_NET_STATISTICS_ETHERNET */
-
-		return -EIO;
-	}
-
 	queue = &dev_data->queue_list[0];
 	err_tx_queue_flushed_count_at_entry = queue->err_tx_queue_flushed_count;
 	tx_desc_list = &queue->tx_desc_list;
 	tx_first_desc = &tx_desc_list->buf_desc[tx_desc_list->head];
 	frag = pkt->frags;
 
-	k_mutex_lock(&queue->tx_mutex, K_FOREVER);
 	free_desc_cnt = k_sem_count_get(&queue->tx_desc_sem);
 	while (frag != NULL) {
 		frag = frag->frags;
@@ -826,8 +761,6 @@ static int eth_mchp_send(const struct device *dev, struct net_pkt *pkt)
 	}
 
 	if (free_desc_cnt < pkt_buff_cnt) {
-		k_mutex_unlock(&queue->tx_mutex);
-
 		return -EIO;
 	}
 
@@ -841,8 +774,6 @@ static int eth_mchp_send(const struct device *dev, struct net_pkt *pkt)
 		frag_len = frag->len;
 		k_sem_take(&queue->tx_desc_sem, K_FOREVER);
 		if (queue->err_tx_queue_flushed_count != err_tx_queue_flushed_count_at_entry) {
-			k_mutex_unlock(&queue->tx_mutex);
-
 			return -EIO;
 		}
 
@@ -867,7 +798,6 @@ static int eth_mchp_send(const struct device *dev, struct net_pkt *pkt)
 
 	if (queue->err_tx_queue_flushed_count != err_tx_queue_flushed_count_at_entry) {
 		gmac_regs->GMAC_NCR |= GMAC_NCR_TSTART_Msk;
-		k_mutex_unlock(&queue->tx_mutex);
 
 		return -EIO;
 	}
@@ -885,7 +815,6 @@ static int eth_mchp_send(const struct device *dev, struct net_pkt *pkt)
 	__ISB();
 	__DSB();
 	gmac_regs->GMAC_NCR |= GMAC_NCR_TSTART_Msk;
-	k_mutex_unlock(&queue->tx_mutex);
 
 	return 0;
 }
@@ -1013,16 +942,18 @@ static void eth_mchp_phy_link_state_changed(const struct device *pdev, struct ph
 	struct gmac_dev_data *const dev_data = dev->data;
 	const struct gmac_dev_config *const cfg = dev->config;
 	gmac_registers_t *const gmac_regs = cfg->regs;
-	bool is_up;
 
-	is_up = state->is_up;
-
-	if (is_up == true) {
+	if (state->is_up == true) {
+		uint32_t val = gmac_regs->GMAC_NCFGR;
 		LOG_INF("Link up");
 		net_eth_carrier_on(dev_data->iface);
-		gmac_link_configure(gmac_regs, PHY_LINK_IS_FULL_DUPLEX(state->speed),
-				    PHY_LINK_IS_SPEED_100M(state->speed));
-	} else if (is_up == false) {
+
+		val &= ~(GMAC_NCFGR_FD_Msk | GMAC_NCFGR_SPD_Msk);
+		val |= PHY_LINK_IS_FULL_DUPLEX(state->speed) ? GMAC_NCFGR_FD_Msk : 0;
+		val |= PHY_LINK_IS_SPEED_100M(state->speed) ? GMAC_NCFGR_SPD_Msk : 0;
+		gmac_regs->GMAC_NCFGR = val;
+		gmac_regs->GMAC_NCR |= (GMAC_NCR_RXEN_Msk | GMAC_NCR_TXEN_Msk);
+	} else if (state->is_up == false) {
 		LOG_INF("Link down");
 		net_eth_carrier_off(dev_data->iface);
 	} else {
@@ -1077,6 +1008,7 @@ static void eth_mchp_iface_init(struct net_if *iface)
 	}
 
 	if (device_is_ready(cfg->phy_dev)) {
+		net_if_carrier_off(iface);
 		phy_link_callback_set(cfg->phy_dev, &eth_mchp_phy_link_state_changed, (void *)dev);
 	} else {
 		LOG_ERR("PHY device not ready");
@@ -1099,10 +1031,41 @@ static struct net_stats_eth *eth_mchp_get_stats(const struct device *dev)
 	struct gmac_dev_data *dev_data = dev->data;
 	const struct gmac_dev_config *const cfg = dev->config;
 	gmac_registers_t *const gmac_regs = cfg->regs;
+	struct net_stats_eth *eth_stats = &dev_data->stats;
 
-	gmac_get_stats(gmac_regs, &dev_data->stats);
+	uint32_t err_ae = gmac_regs->GMAC_AE;    /* Alignment Error */
+	uint32_t err_ofr = gmac_regs->GMAC_OFR;  /* Over Length Frames */
+	uint32_t err_fcs = gmac_regs->GMAC_FCSE; /* FCS Error */
+	uint32_t err_scf = gmac_regs->GMAC_SCF;  /* Single Collision */
+	uint32_t err_mcf = gmac_regs->GMAC_MCF;  /* Multiple Collision */
+	uint32_t err_ecf = gmac_regs->GMAC_EC;   /* Excess Collision */
 
-	return &dev_data->stats;
+	eth_stats->collisions += err_scf + err_mcf + err_ecf;
+	eth_stats->csum.rx_csum_offload_errors += gmac_regs->GMAC_FCSE;
+	eth_stats->csum.rx_csum_offload_good = 0;
+	eth_stats->error_details.rx_align_errors += err_ae;
+	eth_stats->error_details.rx_long_length_errors += err_ofr;
+	eth_stats->error_details.rx_crc_errors += err_fcs;
+	eth_stats->error_details.rx_length_errors += err_ofr;
+	eth_stats->errors.rx += gmac_regs->GMAC_UCE + gmac_regs->GMAC_TCE + gmac_regs->GMAC_IHCE +
+				gmac_regs->GMAC_ROE + gmac_regs->GMAC_RRE + err_ae +
+				gmac_regs->GMAC_RSE + gmac_regs->GMAC_LFFE + err_fcs +
+				gmac_regs->GMAC_JR + err_ofr + gmac_regs->GMAC_UFR;
+	eth_stats->errors.tx +=
+		err_scf + err_mcf + err_ecf + gmac_regs->GMAC_TUR + gmac_regs->GMAC_CSE;
+	eth_stats->multicast.rx += gmac_regs->GMAC_MFR;
+	eth_stats->multicast.tx += gmac_regs->GMAC_MFT;
+	eth_stats->tx_dropped = 0;
+	eth_stats->tx_restart_queue = 0;
+	eth_stats->tx_timeout_count = 0;
+	eth_stats->unknown_protocol = 0;
+
+#ifdef CONFIG_NET_STATISTICS_ETHERNET_VENDOR
+	eth_stats->vendor.key = NULL;
+	eth_stats->vendor.value = 0;
+#endif /* CONFIG_NET_STATISTICS_ETHERNET_VENDOR */
+
+	return eth_stats;
 }
 #endif /* CONFIG_NET_STATISTICS_ETHERNET */
 
