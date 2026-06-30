@@ -1,0 +1,48 @@
+/*
+ * Copyright (c) 2026 Microchip Technology Inc.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+/ {
+	test_device: test_device@0 {
+		compatible = "vnd,pinctrl-device";
+		reg = <0x0 0x1>;
+		pinctrl-0 = <&test_device_default>;
+		pinctrl-names = "default";
+	};
+};
+
+&pinctrl {
+	test_device_default: test_device_default {
+		/* Note: the groups are just meant for testing if properties and
+		 * pins are parsed correctly, but do not necessarily represent a
+		 * feasible combination
+		 */
+		group1 {
+			pinmux = <PB21C_SERCOM3_PAD0>,
+				 <PB22C_SERCOM3_PAD1>;
+		};
+
+		group2 {
+			pinmux = <PC15C_SERCOM2_PAD0>;
+			bias-pull-up;
+		};
+
+		group3 {
+			pinmux = <PC17C_SERCOM2_PAD2>;
+			bias-pull-down;
+		};
+
+		group4 {
+			pinmux = <PD13C_SERCOM1_PAD0>;
+			input-enable;
+			output-enable;
+		};
+
+		group5 {
+			pinmux = <PD14C_SERCOM1_PAD1>;
+			drive-strength = <1>;
+		};
+	};
+};
