@@ -1,0 +1,37 @@
+/*
+ * Copyright (c) 2026 Microchip Technology Inc.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+/* connect the PC18 to PB07 */
+
+#include <zephyr/dt-bindings/gpio/gpio.h>
+
+&portc {
+	status = "okay";
+};
+
+/ {
+	zephyr,user {
+		pwms = <&tcc7 0 PWM_MSEC(1) 0>;
+		gpios = <&portc 18 GPIO_ACTIVE_HIGH>;
+	};
+};
+
+&tcc7 {
+	compatible = "microchip,tcc-g1-pwm";
+	#pwm-cells = <3>;
+	pinctrl-0 = <&tcc7_pwm_default>;
+	pinctrl-names = "default";
+	prescaler = <8>;
+	status = "okay";
+};
+
+&pinctrl {
+	tcc7_pwm_default: tcc7_pwm_default {
+		group1 {
+			pinmux = <PB7F_TCC7_WO0>;
+		};
+	};
+};

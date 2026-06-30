@@ -1,0 +1,37 @@
+/*
+ * Copyright (c) 2026 Microchip Technology Inc.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+/* connect the PC26 to PC01 */
+
+#include <zephyr/dt-bindings/gpio/gpio.h>
+
+&portc {
+	status = "okay";
+};
+
+/ {
+	zephyr,user {
+		pwms = <&tcc6 0 PWM_MSEC(1) 0>;
+		gpios = <&portc 26 GPIO_ACTIVE_HIGH>;
+	};
+};
+
+&tcc6 {
+	compatible = "microchip,tcc-g1-pwm";
+	#pwm-cells = <3>;
+	pinctrl-0 = <&tcc6_pwm_default>;
+	pinctrl-names = "default";
+	prescaler = <8>;
+	status = "okay";
+};
+
+&pinctrl {
+	tcc6_pwm_default: tcc6_pwm_default {
+		group1 {
+			pinmux = <PC1F_TCC6_WO0>;
+		};
+	};
+};
