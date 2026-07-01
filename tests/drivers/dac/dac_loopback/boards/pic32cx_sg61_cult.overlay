@@ -21,9 +21,8 @@
 
 	dac0: channel@0 {
 		reg = <0>;
-		rate = <100>;
+		rate = <1000>;
 		data-adj = "right";
-		refresh-period = <30>;
 		sampling-ratio = <1>;
 		zephyr,resolution = <12>;
 	};
