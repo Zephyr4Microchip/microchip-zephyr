@@ -614,9 +614,12 @@ static int spi_transceive_interrupt(const struct device *dev, const struct spi_c
 		LOG_ERR("Timeout while clearing RXC");
 	}
 
-	/* Get the dummysize */
-	if ((data->ctx.rx_len) > (data->ctx.tx_len)) {
-		data->dummysize = (data->ctx.rx_len) - (data->ctx.tx_len);
+	/* Get the dummysize: use spi_context helpers for total buffer lengths */
+	size_t total_tx_len = spi_context_total_tx_len(&data->ctx);
+	size_t total_rx_len = spi_context_total_rx_len(&data->ctx);
+
+	if (total_rx_len > total_tx_len) {
+		data->dummysize = total_rx_len - total_tx_len;
 	} else {
 		data->dummysize = 0;
 	}
@@ -959,8 +962,7 @@ static void spi_mchp_isr_master(const struct device *dev)
 	bool rx_ready = ((intflag & SERCOM_SPI_INTFLAG_RXC_Msk) != 0U);
 	bool tx_ready = ((intflag & SERCOM_SPI_INTFLAG_DRE_Msk) != 0U);
 	bool tx_complete = ((intflag & SERCOM_SPI_INTFLAG_TXC_Msk) != 0U);
-	bool transmit_needed = (spi_context_tx_on(&data->ctx) == true) || (data->dummysize > 0) ||
-			       (spi_context_rx_on(&data->ctx) == true);
+	bool transmit_needed = (spi_context_tx_on(&data->ctx) == true) || (data->dummysize > 0);
 	bool rx_buf_on = spi_context_rx_buf_on(&data->ctx);
 	bool rx_on = spi_context_rx_on(&data->ctx);
 	bool receive_needed = rx_ready && rx_on;
