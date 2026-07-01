@@ -33,6 +33,7 @@ tests:
       - pic32cx_sg61_cult
       - pic32ck_gc01_cult
       - pic32ck_sg01_cult
+      - pic32cm_pl10_cnano
     integration_platforms:
       - native_sim
       - native_sim/native/64
