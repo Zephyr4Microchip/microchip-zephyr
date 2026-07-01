@@ -1,0 +1,34 @@
+/*
+ * Copyright (c) 2026 Microchip Technology Inc.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+/*connect the PA02 to PA03 for the test*/
+
+dut: &sercom0 {
+	status = "okay";
+	compatible = "microchip,sercom-g1-uart";
+	#address-cells = <1>;
+	#size-cells = <0>;
+
+	current-speed = <115200>;
+	data-bits = <8>;
+	parity = "none";
+	stop-bits = "1";
+
+	rxpo = <3>;
+	txpo = <1>;
+
+	pinctrl-0 = <&sercom0_uart_default>;
+	pinctrl-names = "default";
+};
+
+&pinctrl {
+	sercom0_uart_default: sercom0_uart_default {
+		group1 {
+			pinmux = <PA3C_SERCOM0_PAD3>,
+				 <PA2C_SERCOM0_PAD2>;
+		};
+	};
+};
