@@ -1,0 +1,40 @@
+/*
+ * Copyright (c) 2026 Microchip Technology Inc.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+&clock {
+	mclkperiph: mclkperiph {
+		compatible = "microchip,pic32cm-pl-mclkperiph";
+		#clock-cells = <1>;
+
+		tc0 {
+			subsystem = <CLOCK_MCHP_MCLKPERIPH_ID_APBC_TC0>;
+			mclk-en = <1>;
+		};
+	};
+
+	gclkperiph: gclkperiph {
+		compatible = "microchip,pic32cm-pl-gclkperiph";
+		#clock-cells = <1>;
+
+		sercom0 {
+			subsystem = <CLOCK_MCHP_GCLKPERIPH_ID_SERCOM0_CORE>;
+			gclkperiph-src = "gclk0";
+			gclkperiph-en = <1>;
+		};
+	};
+
+	gclkgen: gclkgen {
+		compatible = "microchip,pic32cm-pl-gclkgen";
+
+		gclkgen3 {
+			subsystem = <CLOCK_MCHP_GCLKGEN_ID_GEN3>;
+			gclkgen-div-factor = <1>;
+			gclkgen-run-in-standby-en = <1>;
+			gclkgen-src = "osc32k";
+			gclkgen-en = <1>;
+		};
+	};
+};

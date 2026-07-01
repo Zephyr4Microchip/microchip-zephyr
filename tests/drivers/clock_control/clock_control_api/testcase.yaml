@@ -20,6 +20,7 @@ tests:
       - pic32cx_sg61_cult
       - pic32cz_ca80_cult
       - pic32cz_ca90_cult
+      - pic32cm_pl10_cnano
     integration_platforms:
       - esp32_devkitc/esp32/procpu
   drivers.clock.clock_control_nrf5:
