@@ -1,0 +1,56 @@
+/*
+ * Copyright (c) 2026 Microchip Technology Inc.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+/ {
+	test_device: test_device@0 {
+		compatible = "vnd,pinctrl-device";
+		reg = <0x0 0x1>;
+		pinctrl-0 = <&test_device_default>;
+		pinctrl-names = "default";
+	};
+};
+
+&pinctrl {
+	test_device_default: test_device_default {
+		/* Note: the groups are just meant for testing if properties and
+		 * pins are parsed correctly, but do not necessarily represent a
+		 * feasible combination
+		 */
+		group1 {
+			pinmux = <PA1_GPIO>,
+				 <PA2_GPIO>;
+		};
+
+		group2 {
+			pinmux = <PA3_GPIO>;
+			bias-pull-up;
+		};
+
+		group3 {
+			pinmux = <PA4_GPIO>;
+			bias-pull-down;
+		};
+
+		group4 {
+			pinmux = <PB1_GPIO>;
+			input-enable;
+			output-enable;
+		};
+
+		group5 {
+			pinmux = <0>;
+		};
+
+		group6 {
+			pinmux = <0>;
+		};
+
+		group7 {
+			pinmux = <PB2_GPIO>;
+			slew-limit-en = <1>;
+		};
+	};
+};
