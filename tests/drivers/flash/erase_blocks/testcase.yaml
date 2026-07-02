@@ -24,5 +24,7 @@ tests:
       - pic32cz_ca80_cult
       - pic32cz_ca90_cult
       - pic32cm_jh01_cpro
+      - pic32ck_sg01_cult
+      - pic32ck_gc01_cult
     integration_platforms:
       - nrf9160dk/nrf9160

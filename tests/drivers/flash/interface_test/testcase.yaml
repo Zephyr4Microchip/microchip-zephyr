@@ -19,6 +19,8 @@ tests:
       - sam_e54_xpro
       - pic32cz_ca80_cult
       - pic32cz_ca90_cult
+      - pic32ck_sg01_cult
+      - pic32ck_gc01_cult
   drivers.flash.interface_test.build_only:
     harness: ztest
     build_only: true
