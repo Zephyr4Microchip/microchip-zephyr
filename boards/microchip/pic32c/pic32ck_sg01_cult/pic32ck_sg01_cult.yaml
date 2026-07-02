@@ -13,6 +13,7 @@ supported:
   - can
   - clock_control
   - entropy
+  - flash
   - gpio
   - hwinfo
   - i2c
