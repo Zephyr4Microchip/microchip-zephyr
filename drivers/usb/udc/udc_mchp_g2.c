@@ -17,7 +17,7 @@ LOG_MODULE_REGISTER(udc_mchp_g2, CONFIG_UDC_DRIVER_LOG_LEVEL);
 
 /* Event flags for driver thread */
 #define MCHP_G2_EVT_SETUP        BIT(0)
-#define MCHP_G2_EVT_XFER         BIT(1) /* EP0 IN transfer */
+#define MCHP_G2_EVT_XFER         BIT(1) /* EP0 transfer (IN, RX-done, Status-IN) */
 #define MCHP_G2_EVT_BUS_RESET    BIT(2)
 #define MCHP_G2_EVT_SUSPEND      BIT(3)
 #define MCHP_G2_EVT_RESUME       BIT(4)
@@ -71,7 +71,7 @@ LOG_MODULE_REGISTER(udc_mchp_g2, CONFIG_UDC_DRIVER_LOG_LEVEL);
 /* DT maximum_speed enum index for high-speed */
 #define MCHP_G2_SPEED_IDX_HS 2
 
-/* Timeout loop counts (1 µs per iteration) */
+/* Timeout loop counts (1 us per iteration) */
 #define MCHP_G2_SYNC_TIMEOUT_ITER      10000
 #define MCHP_G2_PHY_READY_TIMEOUT_ITER 100000
 
@@ -121,8 +121,8 @@ struct udc_mchp_g2_data {
 	atomic_t bulk_rx_nak;     /* RxPktRdy held; data in sw buf */
 	atomic_t bulk_rx_pending; /* RxPktRdy held; data in HW FIFO */
 
-	uint8_t ep0_rx_staging[MCHP_G2_EP0_MPS];
-	uint16_t ep0_rx_staging_len;
+	struct net_buf *ep0_rx_buf; /* data buf provided by class; written directly by ISR */
+	atomic_t ep0_rx_pending;    /* RxPktRdy held; data buf not yet available */
 	uint16_t ep0_ctrl_write_len;
 	uint16_t ep0_ctrl_bytes_received;
 	uint8_t ep0_ctrl_write_setup[MCHP_G2_SETUP_PACKET_SIZE];
@@ -270,7 +270,7 @@ static void mchp_g2_handle_bulk_tx(const struct device *dev)
 	}
 }
 
-/* Handle EP0 Control Write completion. Recovers from SETUP/data race. */
+/* Handle EP0 Control Write completion. */
 static void mchp_g2_handle_ep0_rx_done(const struct device *dev)
 {
 	struct udc_mchp_g2_data *priv = udc_get_private(dev);
@@ -279,7 +279,6 @@ static void mchp_g2_handle_ep0_rx_done(const struct device *dev)
 	struct net_buf *setup_hold = NULL;
 	struct net_buf *out_buf;
 	struct net_buf *status;
-	size_t len;
 
 	/* Remove the SETUP buffer from the queue if it's still at the head. */
 	out_buf = ep0_out ? udc_buf_peek(ep0_out) : NULL;
@@ -289,7 +288,7 @@ static void mchp_g2_handle_ep0_rx_done(const struct device *dev)
 		out_buf = ep0_out ? udc_buf_peek(ep0_out) : NULL;
 	}
 
-	/* Race fallback: data buffer still not queued; re-trigger SETUP. */
+	/* Data buf not yet queued; re-deliver SETUP to the class. */
 	if ((out_buf == NULL) || (udc_get_buf_info(out_buf)->setup != 0U)) {
 		if (setup_hold != NULL) {
 			memset(setup_hold->data, 0, MCHP_G2_SETUP_PACKET_SIZE);
@@ -301,12 +300,10 @@ static void mchp_g2_handle_ep0_rx_done(const struct device *dev)
 		out_buf = ep0_out ? udc_buf_peek(ep0_out) : NULL;
 	}
 
-	/* Copy staged data into the data buffer and submit. */
+	/* Submit the completed OUT transfer. */
 	if (out_buf != NULL && udc_get_buf_info(out_buf)->setup == 0U) {
+		priv->ep0_rx_buf = NULL;
 		out_buf = udc_buf_get(ep0_out);
-		len = MIN((size_t)priv->ep0_rx_staging_len, net_buf_tailroom(out_buf));
-
-		memcpy(net_buf_add(out_buf, len), priv->ep0_rx_staging, len);
 		udc_submit_ep_event(dev, out_buf, 0);
 
 		/* Drain status ZLP. */
@@ -317,7 +314,6 @@ static void mchp_g2_handle_ep0_rx_done(const struct device *dev)
 		}
 	}
 
-	priv->ep0_rx_staging_len = 0U;
 	priv->ep0_ctrl_bytes_received = 0U;
 	if (setup_hold != NULL) {
 		memset(setup_hold->data, 0, MCHP_G2_SETUP_PACKET_SIZE);
@@ -553,9 +549,10 @@ static bool mchp_g2_handle_usb_events(usbhs_registers_t *regs, struct udc_mchp_g
 
 	if ((intrusb & USBHS_INTRUSB_RESET_Msk) != 0U) {
 		priv->ep0_state = EP0_STATE_IDLE;
-		priv->ep0_rx_staging_len = 0U;
+		priv->ep0_rx_buf = NULL;
 		priv->ep0_ctrl_write_len = 0U;
 		priv->ep0_ctrl_bytes_received = 0U;
+		atomic_clear(&priv->ep0_rx_pending);
 		/* Clear stale bulk endpoint state on reset */
 		atomic_clear(&priv->bulk_tx_done);
 		atomic_clear(&priv->bulk_rx_done);
@@ -593,7 +590,7 @@ static bool mchp_g2_handle_usb_events(usbhs_registers_t *regs, struct udc_mchp_g
 /*
  * Read EP0 CSR0L and resolve SentStall/SetupEnd before the state machine.
  * Returns true if SetupEnd was cleared (ISR should exit).
- * Never clears SendStall — doing so before the STALL is sent would cancel it.
+ * Never clears SendStall - doing so before the STALL is sent would cancel it.
  */
 static bool mchp_g2_handle_ep0_csr(usbhs_registers_t *regs, struct udc_mchp_g2_data *priv,
 				   uint8_t *csr0L_out)
@@ -629,7 +626,7 @@ static bool mchp_g2_handle_ep0_csr(usbhs_registers_t *regs, struct udc_mchp_g2_d
 
 /*
  * IDLE state: read SETUP packet and advance EP0 state.
- * wLen==0 → STATUS_IN, bmReqType[7] → TX (Control Read), else → RX.
+ * wLen==0 : STATUS_IN, bmReqType[7] : TX (Control Read), else : RX.
  */
 static void mchp_g2_ep0_state_idle(usbhs_registers_t *regs, struct udc_mchp_g2_data *priv,
 				   uint8_t csr0L)
@@ -673,6 +670,12 @@ static void mchp_g2_ep0_state_idle(usbhs_registers_t *regs, struct udc_mchp_g2_d
 		/* Snapshot SETUP bytes; priv->setup may be overwritten by a later ISR. */
 		memcpy(priv->ep0_ctrl_write_setup, priv->setup, MCHP_G2_SETUP_PACKET_SIZE);
 		priv->ep0_ctrl_write_len = wLen;
+		/* Reset per-transfer state; the thread may not have processed the
+		 * previous transfer before the host issues the next SETUP.
+		 */
+		priv->ep0_ctrl_bytes_received = 0U;
+		priv->ep0_rx_buf = NULL;
+		atomic_clear(&priv->ep0_rx_pending);
 	}
 
 	k_event_post(&priv->events, MCHP_G2_EVT_SETUP);
@@ -708,19 +711,15 @@ static void mchp_g2_ep0_state_tx(struct udc_mchp_g2_data *priv, uint8_t csr0L,
 }
 
 /*
- * RX state: accumulate Control Write data into a staging buffer.
- * The SETUP buf is at the head of the OUT queue so data goes to staging first.
- * On last (short) packet, ACK with DataEnd to arm Status IN ZLP.
+ * RX state: receive Control Write data directly into the UDC-provided buffer.
  */
 static void mchp_g2_ep0_state_rx(const struct device *dev, usbhs_registers_t *regs,
 				 struct udc_mchp_g2_data *priv, uint8_t csr0L)
 {
 	uint8_t count;
-	struct udc_ep_config *ep0_out;
-	uint16_t mps;
 	volatile uint32_t *fifo;
-	uint32_t avail;
 	uint32_t size;
+	struct net_buf *buf;
 	bool last;
 
 	if ((csr0L & USBHS_ENDPOINT0_CSR0L_RXPKTRDY_Msk) == 0U) {
@@ -728,26 +727,27 @@ static void mchp_g2_ep0_state_rx(const struct device *dev, usbhs_registers_t *re
 	}
 
 	count = regs->ENDPOINT0.USBHS_COUNT0 & MCHP_G2_COUNT0_MASK;
-	ep0_out = udc_get_ep_cfg(dev, USB_CONTROL_EP_OUT);
-	mps = ep0_out ? udc_mps_ep_size(ep0_out) : MCHP_G2_EP0_MPS;
+	buf = priv->ep0_rx_buf;
 
 	if (count > 0U) {
-		fifo = (volatile uint32_t *)&regs->ENDPOINT0.USBHS_FIFOX[0];
-		avail = sizeof(priv->ep0_rx_staging) - priv->ep0_rx_staging_len;
-		size = MIN((uint32_t)count, avail);
+		if (buf == NULL) {
+			/* No buffer yet; hold RxPktRdy until ep_enqueue arms ep0_rx_buf. */
+			atomic_set(&priv->ep0_rx_pending, 1);
+			return;
+		}
 
-		mchp_g2_fifo_read(fifo, &priv->ep0_rx_staging[priv->ep0_rx_staging_len], size);
-		priv->ep0_rx_staging_len += (uint16_t)size;
-		/* Track all bytes received (may exceed staging buffer size). */
+		fifo = (volatile uint32_t *)&regs->ENDPOINT0.USBHS_FIFOX[0];
+		size = MIN((uint32_t)count, net_buf_tailroom(buf));
+		mchp_g2_fifo_read(fifo, net_buf_add(buf, size), size);
 		priv->ep0_ctrl_bytes_received += (uint16_t)count;
 	}
 
 	/* Transfer complete on short packet OR when all expected bytes received. */
-	last = ((uint16_t)count < mps) ||
+	last = ((uint16_t)count < MCHP_G2_EP0_MPS) ||
 	       (priv->ep0_ctrl_bytes_received >= priv->ep0_ctrl_write_len);
 
 	if (last) {
-		/* Short packet = last; ACK with DataEnd to arm Status IN ZLP. */
+		/* Last packet: ACK with DataEnd to arm Status IN ZLP. */
 		regs->ENDPOINT0.USBHS_CSR0L |=
 			USBHS_ENDPOINT0_CSR0L_PERIPHERAL_EP0_SERVICEDRXPKTRDY_Msk |
 			USBHS_ENDPOINT0_CSR0L_PERIPHERAL_EP0_DATAEND_Msk;
@@ -812,10 +812,10 @@ static void mchp_g2_handle_epx_tx_done(struct udc_mchp_g2_data *priv, usbhs_regi
 
 /*
  * Handle EP1-7 OUT data. For each active endpoint:
- *   short packet or ZLP → clear RxPktRdy, mark done.
- *   full-MPS, buffer full → hold RxPktRdy (NAK host), mark done.
- *   full-MPS, buffer not full → clear RxPktRdy, accumulate.
- *   no buffer → clear RxPktRdy (drop bytes).
+ *   short packet or ZLP : clear RxPktRdy, mark done.
+ *   full-MPS, buffer full : hold RxPktRdy (NAK host), mark done.
+ *   full-MPS, buffer not full : clear RxPktRdy, accumulate.
+ *   no buffer : clear RxPktRdy (drop bytes).
  */
 static void mchp_g2_handle_epx_rx_done(const struct device *dev, usbhs_registers_t *regs,
 				       struct udc_mchp_g2_data *priv, uint16_t endpointRXInterrupts)
@@ -962,12 +962,18 @@ static void mchp_g2_isr_handler(const struct device *dev)
 	mchp_g2_handle_ep0_state(dev, regs, priv, csr0L, endpointTXInterrupts);
 	mchp_g2_handle_epx_tx_done(priv, regs, endpointTXInterrupts);
 	mchp_g2_handle_epx_rx_done(dev, regs, priv, endpointRXInterrupts);
+
+	/* Handle any back-to-back SETUP packet before leaving the interrupt. */
+	if (priv->ep0_state == EP0_STATE_IDLE) {
+		csr0L = regs->ENDPOINT0.USBHS_CSR0L;
+		mchp_g2_ep0_state_idle(regs, priv, csr0L);
+	}
 }
 
 /*
  * EP1-7 OUT enqueue. Handles two deferred-NAK cases:
- *   bulk_rx_nak: buffer boundary — un-NAK now.
- *   bulk_rx_pending: data in HW FIFO with no buffer — drain now.
+ *   bulk_rx_nak: buffer boundary - un-NAK now.
+ *   bulk_rx_pending: data in HW FIFO with no buffer - drain now.
  */
 static int mchp_g2_enqueue_epx_out(const struct device *dev, usbhs_registers_t *regs,
 				   uint8_t ep_idx)
@@ -985,7 +991,7 @@ static int mchp_g2_enqueue_epx_out(const struct device *dev, usbhs_registers_t *
 	bool short_packet;
 	bool buf_full;
 
-	/* Path 1: buffer boundary NAK — un-NAK. */
+	/* Path 1: buffer boundary NAK - un-NAK. */
 	if (atomic_test_and_clear_bit(&priv->bulk_rx_nak, ep_idx)) {
 		key = irq_lock();
 
@@ -995,7 +1001,7 @@ static int mchp_g2_enqueue_epx_out(const struct device *dev, usbhs_registers_t *
 		irq_unlock(key);
 	}
 
-	/* Path 2: data in HW FIFO with no buffer — drain now. */
+	/* Path 2: data in HW FIFO with no buffer - drain now. */
 	if (atomic_test_and_clear_bit(&priv->bulk_rx_pending, ep_idx)) {
 		key = irq_lock();
 		do_bulk_rx = false;
@@ -1092,9 +1098,9 @@ static int mchp_g2_enqueue_epx_in(const struct device *dev, usbhs_registers_t *r
 
 /*
  * EP0 IN enqueue. Three cases:
- *   status ZLP → post EVT_XFER only (hardware already sent it).
- *   TxPktRdy set → FIFO busy; skip (sequencing bug).
- *   data/ZLP → write FIFO, set TxPktRdy, set DataEnd on last packet.
+ *   status ZLP : post EVT_XFER only (hardware already sent it).
+ *   TxPktRdy set : FIFO busy.
+ *   data/ZLP : write FIFO, set TxPktRdy, set DataEnd on last packet.
  * Restores INDEX=0 first; a prior bulk enqueue may have left it non-zero.
  */
 static int mchp_g2_enqueue_ep0_in(const struct device *dev, usbhs_registers_t *regs,
@@ -1112,7 +1118,7 @@ static int mchp_g2_enqueue_ep0_in(const struct device *dev, usbhs_registers_t *r
 	regs->ENDPOINT0.USBHS_INDEX = USBHS_INDEX_SELEP(0);
 
 	if (bi->status != 0U) {
-		/* Status ZLP already sent by hardware; just notify the thread. */
+		/* Status ZLP sent by hardware; notify the thread. */
 		LOG_DBG("ep_enqueue: status IN ZLP queued, posting EVT_XFER");
 		k_event_post(&priv->events, MCHP_G2_EVT_XFER);
 		return 0;
@@ -1120,7 +1126,7 @@ static int mchp_g2_enqueue_ep0_in(const struct device *dev, usbhs_registers_t *r
 
 	csr0 = regs->ENDPOINT0.USBHS_CSR0L;
 	if ((csr0 & USBHS_ENDPOINT0_CSR0L_TXPKTRDY_Msk) != 0U) {
-		/* FIFO busy — sequencing bug. */
+		/* FIFO busy */
 		LOG_WRN("ep_enqueue EP0_IN: TxPktRdy already set "
 			"(CSR0L=0x%02x)  skipped",
 			csr0);
@@ -1154,6 +1160,64 @@ static int mchp_g2_enqueue_ep0_in(const struct device *dev, usbhs_registers_t *r
 	return 0;
 }
 
+/*
+ * EP0 OUT enqueue.  Called when the class driver provides a receive buffer for
+ * a Control Write data stage.
+ */
+static int mchp_g2_enqueue_ep0_out(const struct device *dev, usbhs_registers_t *regs,
+				   struct udc_ep_config *const cfg, struct net_buf *buf)
+{
+	struct udc_mchp_g2_data *priv = udc_get_private(dev);
+	struct udc_buf_info *bi = udc_get_buf_info(buf);
+	unsigned int key;
+	uint8_t count;
+	uint32_t size;
+	volatile uint32_t *fifo;
+	bool last;
+
+	if (bi->setup != 0U) {
+		/* SETUP buffer - handled by the ISR, nothing to arm here. */
+		return 0;
+	}
+
+	key = irq_lock();
+
+	/* Arm ep0_rx_buf so the ISR writes subsequent packets directly. */
+	priv->ep0_rx_buf = buf;
+
+	/* Drain a packet held in the FIFO while ep0_rx_buf was NULL. */
+	if (atomic_clear(&priv->ep0_rx_pending)) {
+		regs->ENDPOINT0.USBHS_INDEX = USBHS_INDEX_SELEP(0);
+		count = regs->ENDPOINT0.USBHS_COUNT0 & MCHP_G2_COUNT0_MASK;
+
+		if (count > 0U) {
+			fifo = (volatile uint32_t *)&regs->ENDPOINT0.USBHS_FIFOX[0];
+			size = MIN((uint32_t)count, net_buf_tailroom(buf));
+			mchp_g2_fifo_read(fifo, net_buf_add(buf, size), size);
+			priv->ep0_ctrl_bytes_received += (uint16_t)count;
+		}
+
+		last = ((uint16_t)count < MCHP_G2_EP0_MPS) ||
+		       (priv->ep0_ctrl_bytes_received >= priv->ep0_ctrl_write_len);
+
+		if (last) {
+			regs->ENDPOINT0.USBHS_CSR0L |=
+				USBHS_ENDPOINT0_CSR0L_PERIPHERAL_EP0_SERVICEDRXPKTRDY_Msk |
+				USBHS_ENDPOINT0_CSR0L_PERIPHERAL_EP0_DATAEND_Msk;
+			priv->ep0_state = EP0_STATE_STATUS_IN;
+			atomic_set(&priv->ep0_rx_done, 1);
+			k_event_post(&priv->events, MCHP_G2_EVT_XFER);
+		} else {
+			/* Release RxPktRdy; host will send remaining packets. */
+			regs->ENDPOINT0.USBHS_CSR0L |=
+				USBHS_ENDPOINT0_CSR0L_PERIPHERAL_EP0_SERVICEDRXPKTRDY_Msk;
+		}
+	}
+
+	irq_unlock(key);
+	return 0;
+}
+
 /* Enqueue a transfer request. Must not block. */
 static int udc_mchp_g2_ep_enqueue(const struct device *dev, struct udc_ep_config *const cfg,
 				  struct net_buf *buf)
@@ -1180,7 +1244,7 @@ static int udc_mchp_g2_ep_enqueue(const struct device *dev, struct udc_ep_config
 		return mchp_g2_enqueue_ep0_in(dev, regs, cfg, buf);
 	}
 
-	return 0;
+	return mchp_g2_enqueue_ep0_out(dev, regs, cfg, buf);
 }
 
 /* Flush FIFO and cancel all queued requests for an endpoint. */
@@ -1200,6 +1264,8 @@ static int udc_mchp_g2_ep_dequeue(const struct device *dev, struct udc_ep_config
 		regs->ENDPOINT0.USBHS_INDEX = USBHS_INDEX_SELEP(0);
 		regs->ENDPOINT0.USBHS_CSR0H |= USBHS_ENDPOINT0_CSR0H_FLUSHFIFO_Msk;
 		atomic_clear(&priv->ep0_rx_done);
+		atomic_clear(&priv->ep0_rx_pending);
+		priv->ep0_rx_buf = NULL;
 		priv->ep0_state = EP0_STATE_IDLE;
 	} else if (USB_EP_DIR_IS_IN(cfg->addr)) {
 		regs->ENDPOINT0.USBHS_INTRTXE &= ~BIT(ep_idx);
@@ -1523,7 +1589,7 @@ static int udc_mchp_g2_ep_clear_halt(const struct device *dev, struct udc_ep_con
 			~(USBHS_ENDPOINTX_TXCSRL_PERIPHERAL_EPX_SENDSTALL_Msk |
 			  USBHS_ENDPOINTX_TXCSRL_PERIPHERAL_EPX_SENTSTALL_Msk);
 		regs->ENDPOINTX.USBHS_TXCSRL |= USBHS_ENDPOINTX_TXCSRL_CLRDATATOG_Msk;
-		/* Flush FIFO to ensure clean DATA0 start after halt clear. */
+		/* Flush FIFO; DATA0 must be clean after halt clear. */
 		regs->ENDPOINTX.USBHS_TXCSRL |= USBHS_ENDPOINTX_TXCSRL_FLUSHFIFO_Msk;
 		if ((regs->ENDPOINTX.USBHS_TXCSRL & USBHS_ENDPOINTX_TXCSRL_FIFONOTEMPTY_Msk) !=
 		    0U) {
@@ -1838,7 +1904,7 @@ static int udc_mchp_g2_shutdown(const struct device *dev)
 		k_usleep(1);
 	}
 
-	/* Reset software FIFO allocator to match the hardware reset state */
+	/* Reinitialise the software FIFO allocator. */
 	for (i = 0; i < MCHP_G2_FIFO_PAGES; i++) {
 		priv->fifo_allocation_table[i] = 0U;
 	}
@@ -1851,7 +1917,7 @@ static int udc_mchp_g2_shutdown(const struct device *dev)
 }
 
 /*
- * Enter a USB 2.0 test mode (§7.1.20 / §9.4.9).
+ * Enter a USB 2.0 test mode (sec. 7.1.20 / sec. 9.4.9).
  * dryrun=true validates the selector without touching hardware.
  * dryrun=false programs the hardware after Status-IN completes.
  * Exit requires a power cycle; there is no software exit path.
@@ -1914,7 +1980,7 @@ static int udc_mchp_g2_test_mode(const struct device *dev, const uint8_t mode, c
 		regs->ENDPOINT0.USBHS_CSR0L |= USBHS_ENDPOINT0_CSR0L_TXPKTRDY_Msk;
 		break;
 	default:
-		/* Unreachable — validated above. */
+		/* Unreachable - validated above. */
 		return -EINVAL;
 	}
 
@@ -1933,7 +1999,7 @@ static int udc_mchp_g2_driver_preinit(const struct device *dev)
 	k_mutex_init(&data->mutex);
 	k_event_init(&priv->events);
 
-	/* Back-reference lets vbus_work reach the device via CONTAINER_OF. */
+	/* dev pointer for CONTAINER_OF access in vbus_work. */
 	priv->dev = dev;
 
 	k_work_init_delayable(&priv->vbus_work, mchp_g2_vbus_poll_work);
@@ -1991,7 +2057,7 @@ static int udc_mchp_g2_driver_preinit(const struct device *dev)
 	}
 
 	priv->ep0_state = EP0_STATE_IDLE;
-	priv->ep0_rx_staging_len = 0U;
+	priv->ep0_rx_buf = NULL;
 	priv->ep0_ctrl_bytes_received = 0U;
 
 	k_thread_create(&priv->thread_data, config->thread_stk, config->thread_stk_sz,
