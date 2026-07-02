@@ -4,9 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-/* Internal loopback test - no external wiring required (TX and RX both on PAD0) */
-
-dut: &sercom1 {
+dut: &sercom0 {
 	compatible = "microchip,sercom-g1-uart";
 	#address-cells = <1>;
 	#size-cells = <0>;
@@ -21,19 +19,19 @@ dut: &sercom1 {
 	rxpo = <0>;
 	txpo = <0>;
 
-	pinctrl-0 = <&sercom1_uart_default>;
+	pinctrl-0 = <&sercom0_uart_default>;
 	pinctrl-names = "default";
 
-	dmas = <&dmac 5 0x06>, <&dmac 6 0x07>;
+	dmas = <&dmac 5 0x04>, <&dmac 6 0x05>;
 	dma-names = "rx", "tx";
 	status = "okay";
 };
 
 &pinctrl {
-	sercom1_uart_default: sercom1_uart_default {
+	sercom0_uart_default: sercom0_uart_default {
 		group1 {
-			pinmux = <PA16C_SERCOM1_PAD0>,
-				 <PA17C_SERCOM1_PAD1>;
+			pinmux = <PB24C_SERCOM0_PAD0>,
+				 <PB25C_SERCOM0_PAD1>;
 		};
 	};
 };
