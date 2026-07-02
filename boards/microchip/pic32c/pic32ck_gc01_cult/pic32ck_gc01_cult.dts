@@ -365,6 +365,10 @@
 	status = "okay";
 };
 
+&portc {
+	status = "okay";
+};
+
 &portd {
 	status = "okay";
 };
@@ -493,4 +497,8 @@ zephyr_udc0: &hsusb0 {
 		disk-name = "SD";
 		status = "okay";
 	};
+};
+
+&eic {
+	status = "okay";
 };

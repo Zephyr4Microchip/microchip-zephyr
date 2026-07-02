@@ -323,6 +323,10 @@
 	status = "okay";
 };
 
+&portc_secure {
+	status = "okay";
+};
+
 &portd_secure {
 	status = "okay";
 };
@@ -442,4 +446,12 @@ zephyr_udc0: &hsusb0 {
 		disk-name = "SD";
 		status = "okay";
 	};
+};
+
+&eic {
+	status = "disabled";
+};
+
+&eic_secure {
+	status = "okay";
 };

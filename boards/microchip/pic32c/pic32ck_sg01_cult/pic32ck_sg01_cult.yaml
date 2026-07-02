@@ -17,6 +17,7 @@ supported:
   - flash
   - gpio
   - hwinfo
+  - interrupt_controller
   - i2c
   - netif:eth
   - pinctrl
