@@ -61,6 +61,24 @@ LOG_MODULE_REGISTER(udc_mchp_g2, CONFIG_UDC_DRIVER_LOG_LEVEL);
 /* PHY24.OTGOFF: powers off OTG comparators */
 #define MCHP_G2_PHY24_OTGOFF_Msk BIT(1)
 
+/*
+ * USBHPHY calibration values (characterization data, CALOTP FCCFG67 fuse map):
+ *
+ * Function             Fuse       Size Offset New Value  Register/Bit
+ * Squelch               SQUELCH    4d   0d     0x2        PHY04.SQUELCH210 / PHY08.SQUELCH3
+ * HS amp tuning         TUNE       8d   4d     0x57       PHY0C.TUNE210 / PHY10.TUNE76543
+ * On die term comp      ODT        3d   12d    0x3        PHY14.ODT0 / PHY18.ODT21
+ * HS slew rate          HSSLEW     3d   15d    0x2        PHY20.HSSLEW10 / PHY24.HSSLEW2
+ * Host disconnect detect DISCONDET 4d   18d    0xD        PHY28.DISCONDET
+ * HS drive current comp HSDRVCOMP  3d   22d    0x3        PHY28.HSDRVCOMP
+ */
+#define MCHP_G2_PHY_CAL_SQUELCH_VAL   0x2U  /* 4-bit: SQUELCH210 (bits 0-2) | SQUELCH3 (bit 3) */
+#define MCHP_G2_PHY_CAL_TUNE_VAL      0x57U /* 8-bit: TUNE210 (bits 0-2) | TUNE76543 (bits 3-7) */
+#define MCHP_G2_PHY_CAL_ODT_VAL       0x3U  /* 3-bit: ODT0 (bit 0) | ODT21 (bits 1-2) */
+#define MCHP_G2_PHY_CAL_HSSLEW_VAL    0x2U  /* 3-bit: HSSLEW10 (bits 0-1) | HSSLEW2 (bit 2) */
+#define MCHP_G2_PHY_CAL_DISCONDET_VAL 0xDU  /* 4-bit: PHY28.DISCONDET */
+#define MCHP_G2_PHY_CAL_HSDRVCOMP_VAL 0x3U  /* 3-bit: PHY28.HSDRVCOMP */
+
 /* INTRUSBE VBUSERR enable bit (kept masked) */
 #define MCHP_G2_INTRUSBE_VBUSERR_Msk BIT(4)
 
@@ -1840,6 +1858,34 @@ static int udc_mchp_g2_init(const struct device *dev)
 			k_usleep(1);
 		}
 	}
+
+	/* Apply USBHPHY characterization calibration values. PHY0x registers
+	 * are only accessible once PHYRDY is set.
+	 */
+	regs->ENDPOINT0.USBHS_PHY04 = (regs->ENDPOINT0.USBHS_PHY04 & ~USBHS_PHY04_SQUELCH210_Msk) |
+				      USBHS_PHY04_SQUELCH210(MCHP_G2_PHY_CAL_SQUELCH_VAL);
+	regs->ENDPOINT0.USBHS_PHY08 = (regs->ENDPOINT0.USBHS_PHY08 & ~USBHS_PHY08_SQUELCH3_Msk) |
+				      USBHS_PHY08_SQUELCH3(MCHP_G2_PHY_CAL_SQUELCH_VAL >> 3);
+
+	regs->ENDPOINT0.USBHS_PHY0C = (regs->ENDPOINT0.USBHS_PHY0C & ~USBHS_PHY0C_TUNE210_Msk) |
+				      USBHS_PHY0C_TUNE210(MCHP_G2_PHY_CAL_TUNE_VAL);
+	regs->ENDPOINT0.USBHS_PHY10 = (regs->ENDPOINT0.USBHS_PHY10 & ~USBHS_PHY10_TUNE76543_Msk) |
+				      USBHS_PHY10_TUNE76543(MCHP_G2_PHY_CAL_TUNE_VAL >> 3);
+
+	regs->ENDPOINT0.USBHS_PHY14 = (regs->ENDPOINT0.USBHS_PHY14 & ~USBHS_PHY14_ODT0_Msk) |
+				      USBHS_PHY14_ODT0(MCHP_G2_PHY_CAL_ODT_VAL);
+	regs->ENDPOINT0.USBHS_PHY18 = (regs->ENDPOINT0.USBHS_PHY18 & ~USBHS_PHY18_ODT21_Msk) |
+				      USBHS_PHY18_ODT21(MCHP_G2_PHY_CAL_ODT_VAL >> 1);
+
+	regs->ENDPOINT0.USBHS_PHY20 = (regs->ENDPOINT0.USBHS_PHY20 & ~USBHS_PHY20_HSSLEW10_Msk) |
+				      USBHS_PHY20_HSSLEW10(MCHP_G2_PHY_CAL_HSSLEW_VAL);
+	regs->ENDPOINT0.USBHS_PHY24 = (regs->ENDPOINT0.USBHS_PHY24 & ~USBHS_PHY24_HSSLEW2_Msk) |
+				      USBHS_PHY24_HSSLEW2(MCHP_G2_PHY_CAL_HSSLEW_VAL >> 2);
+
+	regs->ENDPOINT0.USBHS_PHY28 = (regs->ENDPOINT0.USBHS_PHY28 &
+				       ~(USBHS_PHY28_DISCONDET_Msk | USBHS_PHY28_HSDRVCOMP_Msk)) |
+				      USBHS_PHY28_DISCONDET(MCHP_G2_PHY_CAL_DISCONDET_VAL) |
+				      USBHS_PHY28_HSDRVCOMP(MCHP_G2_PHY_CAL_HSDRVCOMP_VAL);
 
 	/* Disable OTG comparators (not needed in peripheral-only mode). */
 	regs->ENDPOINT0.USBHS_PHY24 |= MCHP_G2_PHY24_OTGOFF_Msk;
