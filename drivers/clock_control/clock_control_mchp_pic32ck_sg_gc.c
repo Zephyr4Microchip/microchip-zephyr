@@ -58,6 +58,21 @@ LOG_MODULE_REGISTER(clock_mchp_pic32ck_sg_gc, CONFIG_CLOCK_CONTROL_LOG_LEVEL);
 /* bit positions of PLL_OUT in POSTDIV register, are spanned at fixed intervals apart. */
 #define PLLOUT_POSTDIV_SPAN 8
 
+/* POSTDIVA holds OUT0-OUT3, POSTDIVB holds OUT4-OUT5 */
+#define PLLOUT_PER_POSTDIV_REG 4
+
+/* Get pointer to correct POSTDIV register (A or B) for a given PLL output */
+#define PLLOUT_POSTDIV_REG(regs, pll, out_idx)                                                     \
+	(((out_idx) < PLLOUT_PER_POSTDIV_REG) ? &((regs)->OSCCTRL_PLL0POSTDIVA) + (pll)            \
+					      : &((regs)->OSCCTRL_PLL0POSTDIVB) + (pll))
+
+/* Get bit position within POSTDIV register for enable bit */
+#define PLLOUT_EN_BIT_POS(out_idx)                                                                 \
+	(((((out_idx) % PLLOUT_PER_POSTDIV_REG) + 1) * PLLOUT_POSTDIV_SPAN) - 1)
+
+/* Get bit position within POSTDIV register for divider field */
+#define PLLOUT_DIV_BIT_POS(out_idx) (((out_idx) % PLLOUT_PER_POSTDIV_REG) * PLLOUT_POSTDIV_SPAN)
+
 /* Clock subsystem Types */
 #define SUBSYS_TYPE_XOSC       (0)
 #define SUBSYS_TYPE_DFLL48M    (1)
@@ -350,14 +365,12 @@ int clock_on_pll_out(const struct device *dev, int inst)
 	const struct clock_mchp_config *config = dev->config;
 	oscctrl_registers_t *oscctrl_regs = config->oscctrl_regs;
 
-	uint32_t pos_en;
-	int pll;
+	int pll = inst / PLLOUT_COUNT;
+	int out_idx = inst % PLLOUT_COUNT;
+	uint32_t pos_en = PLLOUT_EN_BIT_POS(out_idx);
+	volatile uint32_t *postdiv_reg = PLLOUT_POSTDIV_REG(oscctrl_regs, pll, out_idx);
 
-	pos_en = ((inst % PLLOUT_COUNT) + 1) * PLLOUT_POSTDIV_SPAN - 1;
-
-	/* same macro for both PLL0 */
-	pll = inst / PLLOUT_COUNT;
-	*(&(oscctrl_regs->OSCCTRL_PLL0POSTDIVA) + (pll)) |= BIT(pos_en);
+	*postdiv_reg |= BIT(pos_en);
 
 	/* Set PLL_out status as on */
 	data->gclkgen_src_on_status |= BIT(CLOCK_MCHP_GCLK_SRC_PLL0_CLKOUT0 + inst);
@@ -681,11 +694,13 @@ static int clock_get_rate_pll_out(const struct device *dev, uint8_t pll_out_id, 
 	}
 
 	pll = pll_out_id / PLLOUT_COUNT;
+	int out_idx = pll_out_id % PLLOUT_COUNT;
 	ret_val = clock_get_rate_pll(dev, pll, &src_freq);
 	if (ret_val == 0) {
-		postdiv = *(&oscctrl_regs->OSCCTRL_PLL0POSTDIVA + (pll)) &
-			  (OSCCTRL_PLL0POSTDIVA_POSTDIV0_Msk
-			   << ((pll_out_id % PLLOUT_COUNT) * PLLOUT_POSTDIV_SPAN));
+		volatile uint32_t *postdiv_reg = PLLOUT_POSTDIV_REG(oscctrl_regs, pll, out_idx);
+		uint32_t div_pos = PLLOUT_DIV_BIT_POS(out_idx);
+
+		postdiv = (*postdiv_reg >> div_pos) & PLLPOSTDIV_Msk;
 		if (postdiv != 0) {
 			*freq = src_freq / postdiv;
 		}
@@ -840,17 +855,15 @@ static void clock_configure_pll_out(const struct device *dev, uint8_t inst, void
 	struct clock_mchp_subsys_pll_out_config *pll_out_config =
 		(struct clock_mchp_subsys_pll_out_config *)req_config;
 
-	uint32_t val32, pos_postdiv;
-	int pll;
+	int pll = inst / PLLOUT_COUNT;
+	int out_idx = inst % PLLOUT_COUNT;
+	uint32_t pos_postdiv = PLLOUT_DIV_BIT_POS(out_idx);
+	volatile uint32_t *postdiv_reg = PLLOUT_POSTDIV_REG(oscctrl_regs, pll, out_idx);
+	uint32_t val32 = *postdiv_reg;
 
-	pos_postdiv = (inst % PLLOUT_COUNT) * PLLOUT_POSTDIV_SPAN;
-
-	/* same macro for both PLL0 */
-	pll = inst / PLLOUT_COUNT;
-	val32 = *(&oscctrl_regs->OSCCTRL_PLL0POSTDIVA + (pll));
-	val32 &= ~((0x3F << pos_postdiv));
+	val32 &= ~(PLLPOSTDIV_Msk << pos_postdiv);
 	val32 |= (pll_out_config->output_division_factor << pos_postdiv);
-	*(&(oscctrl_regs->OSCCTRL_PLL0POSTDIVA) + (pll)) = val32;
+	*postdiv_reg = val32;
 }
 
 /* configure GCLKGEN. */
@@ -905,7 +918,6 @@ static int clock_mchp_on(const struct device *dev, clock_control_subsys_t sys)
 	status = clock_mchp_get_status(dev, sys);
 	if (status == CLOCK_CONTROL_STATUS_ON) {
 		/* clock is already on. */
-		LOG_INF("%s: Clock already enabled", __func__);
 		return -EALREADY;
 	}
 
@@ -915,7 +927,20 @@ static int clock_mchp_on(const struct device *dev, clock_control_subsys_t sys)
 		return -ENOTSUP;
 	}
 
-	/* Wait until the clock state becomes ON. */
+	/*
+	 * Wait until the clock state becomes ON.
+	 * Oscillators (XOSC, XOSC32K, DFLL48M, PLL) use extended timeout (2 seconds)
+	 * to allow for hardware startup time.
+	 * Peripheral clocks use the configured timeout (default 5ms).
+	 */
+	uint32_t timeout_limit = config->on_timeout_ms;
+
+	if ((subsys.bits.type == SUBSYS_TYPE_XOSC) || (subsys.bits.type == SUBSYS_TYPE_XOSC32K) ||
+	    (subsys.bits.type == SUBSYS_TYPE_DFLL48M) || (subsys.bits.type == SUBSYS_TYPE_PLL) ||
+	    (subsys.bits.type == SUBSYS_TYPE_PLL_OUT)) {
+		timeout_limit = 2000; /* 2 second timeout for oscillators */
+	}
+
 	while (1) {
 		/* For XOSC32K, need to wait for the oscillator to be on. get_status only
 		 * return if EN1K or EN32K is on, which does not indicate the status of
@@ -935,17 +960,16 @@ static int clock_mchp_on(const struct device *dev, clock_control_subsys_t sys)
 			}
 		}
 
-		if (on_timeout_ms < config->on_timeout_ms) {
-			/* Thread is not available while booting. */
-			if ((k_is_pre_kernel() == false) && (k_current_get() != NULL)) {
-				/* Sleep before checking again. */
-				k_sleep(K_MSEC(1));
-			} else {
-				WAIT_FOR(0, 1000, NULL);
-			}
-			on_timeout_ms++;
+		/* Thread is not available while booting. */
+		if ((k_is_pre_kernel() == false) && (k_current_get() != NULL)) {
+			/* Sleep before checking again. */
+			k_sleep(K_MSEC(1));
 		} else {
-			/* Clock on timeout occurred */
+			WAIT_FOR(0, 1000, NULL);
+		}
+
+		on_timeout_ms++;
+		if (on_timeout_ms >= timeout_limit) {
 			LOG_ERR("%s: Clock ON timeout", __func__);
 			ret_val = -ETIMEDOUT;
 			break;
@@ -989,17 +1013,19 @@ static int clock_mchp_off(const struct device *dev, clock_control_subsys_t sys)
 		data->pll_on_status &= ~BIT(inst);
 		break;
 
-	case SUBSYS_TYPE_PLL_OUT:
+	case SUBSYS_TYPE_PLL_OUT: {
 		/* Find the bit position for the specified PLLOUT */
-		pos_en = (((inst % PLLOUT_COUNT) + 1) * PLLOUT_POSTDIV_SPAN) - 1;
-
-		/* same macro for both PLL0 and  */
 		pll = inst / PLLOUT_COUNT;
-		*(&(oscctrl_regs->OSCCTRL_PLL0POSTDIVA) + (pll)) &= ~BIT(pos_en);
+		int out_idx = inst % PLLOUT_COUNT;
+
+		pos_en = PLLOUT_EN_BIT_POS(out_idx);
+		volatile uint32_t *postdiv_reg = PLLOUT_POSTDIV_REG(oscctrl_regs, pll, out_idx);
+		*postdiv_reg &= ~BIT(pos_en);
 
 		/* Set pll_out status as off */
 		data->gclkgen_src_on_status &= ~BIT(CLOCK_MCHP_GCLK_SRC_PLL0_CLKOUT0 + inst);
 		break;
+	}
 
 	case SUBSYS_TYPE_XOSC32K:
 		osc32kctrl_regs->OSC32KCTRL_XOSC32K &= ~OSC32KCTRL_XOSC32K_ENABLE_Msk;
@@ -1097,19 +1123,23 @@ static enum clock_control_status clock_mchp_get_status(const struct device *dev,
 		}
 		break;
 
-	case SUBSYS_TYPE_PLL_OUT:
+	case SUBSYS_TYPE_PLL_OUT: {
 		/* Check if PLL is enabled */
 		pll = inst / PLLOUT_COUNT;
 		if ((oscctrl_regs->OSCCTRL_STATUS & BIT(OSCCTRL_STATUS_PLL0LOCK_Pos + pll)) != 0) {
 			/* Find the bit position for the specified PLLOUT */
-			mask = BIT((((inst % PLLOUT_COUNT) + 1) * PLLOUT_POSTDIV_SPAN) - 1);
-			ret_status = ((*(&oscctrl_regs->OSCCTRL_PLL0POSTDIVA + (pll)) & mask) != 0)
-					     ? CLOCK_CONTROL_STATUS_ON
-					     : CLOCK_CONTROL_STATUS_OFF;
+			int out_idx = inst % PLLOUT_COUNT;
+			volatile uint32_t *postdiv_reg =
+				PLLOUT_POSTDIV_REG(oscctrl_regs, pll, out_idx);
+
+			mask = BIT(PLLOUT_EN_BIT_POS(out_idx));
+			ret_status = ((*postdiv_reg & mask) != 0) ? CLOCK_CONTROL_STATUS_ON
+								  : CLOCK_CONTROL_STATUS_OFF;
 		} else {
 			ret_status = CLOCK_CONTROL_STATUS_OFF;
 		}
 		break;
+	}
 
 	case SUBSYS_TYPE_RTC:
 		ret_status = CLOCK_CONTROL_STATUS_ON;
@@ -1628,29 +1658,28 @@ void clock_pll_out_init(const struct device *dev, struct clock_pll_out_init *pll
 	struct clock_mchp_data *data = dev->data;
 	oscctrl_registers_t *oscctrl_regs = config->oscctrl_regs;
 
-	uint32_t val32, pos_postdiv;
 	int inst = pll_out_init->subsys.bits.inst;
-	int pll;
+	int pll = inst / PLLOUT_COUNT;
+	int out_idx = inst % PLLOUT_COUNT;
 
 	/* Check if the PLL_OUT is already on */
 	if ((data->gclkgen_src_on_status & BIT(CLOCK_MCHP_GCLK_SRC_PLL0_CLKOUT0 + inst)) != 0) {
-		LOG_INF("%s: skipping pll_%d_out_%d_init, as it is already on", __func__,
-			inst / PLLOUT_COUNT, inst % PLLOUT_COUNT);
+		LOG_INF("%s: skipping pll_%d_out_%d_init, as it is already on", __func__, pll,
+			out_idx);
 		return;
 	}
 
-	pos_postdiv = (inst % PLLOUT_COUNT) * PLLOUT_POSTDIV_SPAN;
+	uint32_t pos_postdiv = PLLOUT_DIV_BIT_POS(out_idx);
+	volatile uint32_t *postdiv_reg = PLLOUT_POSTDIV_REG(oscctrl_regs, pll, out_idx);
 
-	/* same macro for both PLL0 */
-	pll = 0; /*only pll0*/
-	val32 = *(&oscctrl_regs->OSCCTRL_PLL0POSTDIVA + (pll)) & ~(PLLPOSTDIV_Msk << pos_postdiv);
+	uint32_t val32 = *postdiv_reg & ~(PLLPOSTDIV_Msk << pos_postdiv);
 	val32 |= (pll_out_init->output_division_factor << pos_postdiv);
-	*(&(oscctrl_regs->OSCCTRL_PLL0POSTDIVA) + (pll)) = val32;
+	*postdiv_reg = val32;
 
 	/* Check if the driving pll is not requested for on. Also if out is not enabled */
 	if ((pll_out_init->output_en == 0) || (clock_on_pll_out(dev, inst) != 0)) {
-		LOG_INF("%s: skipping pll_%d_out_%d_init, as driving PLL is off", __func__,
-			inst / PLLOUT_COUNT, inst % PLLOUT_COUNT);
+		LOG_INF("%s: skipping pll_%d_out_%d_init, as driving PLL is off", __func__, pll,
+			out_idx);
 		return;
 	}
 
