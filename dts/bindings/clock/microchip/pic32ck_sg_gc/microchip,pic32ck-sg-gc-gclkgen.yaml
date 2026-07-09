@@ -64,7 +64,7 @@ child-binding:
         - "pll0_3"
         - "pll0_4"
         - "pll0_5"
-      default: "xosc"
+      default: "pll0_0"
       description: |
         Generator source clock selection
 
@@ -97,7 +97,7 @@ child-binding:
 
     gclkgen-div-factor:
       type: int
-      default: 0
+      default: 1
       description: |
         Represent a division value for the corresponding Generator. The actual division factor is
         dependent on the state of div-select (gclk1 0 - 65535, others 0 - 255)
