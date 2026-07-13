@@ -25,7 +25,7 @@
  *     -DDTC_OVERLAY_FILE=boards/mchp_sam_e54_xpro_sdhc_spi.overlay
  */
 
-&sdhc0 {
+&sdhc1 {
 	status = "disabled";
 
 	disk {
