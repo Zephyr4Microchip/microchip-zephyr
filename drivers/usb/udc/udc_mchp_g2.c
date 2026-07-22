@@ -41,6 +41,10 @@ LOG_MODULE_REGISTER(udc_mchp_g2, CONFIG_UDC_DRIVER_LOG_LEVEL);
 #define MCHP_G2_EP0_MPS           64U /* Control EP max packet size */
 #define MCHP_G2_SETUP_PACKET_SIZE 8U  /* SETUP packet length */
 
+/* SETUP queue depth. */
+#define MCHP_G2_SETUP_Q_DEPTH 8U
+#define MCHP_G2_SETUP_Q_MASK  (MCHP_G2_SETUP_Q_DEPTH - 1U)
+
 /* SETUP packet field offsets: bmRequestType in word0[7:0], wLength in word1[31:16]. */
 #define MCHP_G2_SETUP_BMREQTYPE_MASK 0xFFU
 #define MCHP_G2_SETUP_WLENGTH_SHIFT  16U
@@ -126,7 +130,10 @@ struct udc_mchp_g2_config {
 struct udc_mchp_g2_data {
 	struct k_thread thread_data;
 	struct k_event events;
-	uint8_t setup[MCHP_G2_SETUP_PACKET_SIZE];
+
+	uint8_t setup_q[MCHP_G2_SETUP_Q_DEPTH][MCHP_G2_SETUP_PACKET_SIZE];
+	volatile uint8_t setup_q_head;
+	volatile uint8_t setup_q_tail;
 	enum udc_mchp_g2_ep0_state ep0_state;
 	uint32_t fifo_allocation_table[MCHP_G2_FIFO_PAGES];
 	uint16_t fifo_in_addr[MCHP_G2_EP_MAX];
@@ -362,11 +369,13 @@ static void mchp_g2_handle_ep0_tx(const struct device *dev, struct net_buf *buf)
 
 	csr0 = USBHS_ENDPOINT0_CSR0L_TXPKTRDY_Msk;
 
-	/* Set DataEnd on the last packet. */
-	if (buf->len == 0 && udc_get_buf_info(buf)->zlp == 0U) {
+	/* Set DataEnd on the last packet, including a deferred trailing ZLP
+	 * when the previous packet was an exact multiple of the EP0 MPS.
+	 */
+	if (buf->len == 0) {
 		csr0 |= USBHS_ENDPOINT0_CSR0L_PERIPHERAL_EP0_DATAEND_Msk;
+		udc_get_buf_info(buf)->zlp = 0U;
 	}
-
 	priv->ep0_state = EP0_STATE_TX;
 	regs->ENDPOINT0.USBHS_CSR0L |= csr0;
 }
@@ -472,7 +481,7 @@ static void mchp_g2_thread_handler(void *arg1, void *arg2, void *arg3)
 
 			buf = ep_in ? udc_buf_peek(ep_in) : NULL;
 
-			if (buf != NULL && buf->len > 0) {
+			if (buf != NULL && (buf->len > 0 || udc_get_buf_info(buf)->zlp != 0U)) {
 				mchp_g2_handle_ep0_tx(dev, buf);
 			} else if (buf != NULL) {
 				udc_submit_ep_event(dev, udc_buf_get(ep_in), 0);
@@ -481,11 +490,15 @@ static void mchp_g2_thread_handler(void *arg1, void *arg2, void *arg3)
 
 		if ((events & MCHP_G2_EVT_SETUP) != 0U) {
 			k_event_clear(&priv->events, MCHP_G2_EVT_SETUP);
-			LOG_DBG("SETUP packet received: %02x %02x %02x %02x "
-				"%02x %02x %02x %02x",
-				priv->setup[0], priv->setup[1], priv->setup[2], priv->setup[3],
-				priv->setup[4], priv->setup[5], priv->setup[6], priv->setup[7]);
-			udc_setup_received(dev, priv->setup);
+
+			/* Drain every queued SETUP in arrival order. */
+			while (priv->setup_q_tail != priv->setup_q_head) {
+				uint8_t *setup =
+					priv->setup_q[priv->setup_q_tail & MCHP_G2_SETUP_Q_MASK];
+
+				udc_setup_received(dev, setup);
+				priv->setup_q_tail++;
+			}
 		}
 	}
 }
@@ -567,6 +580,8 @@ static bool mchp_g2_handle_usb_events(usbhs_registers_t *regs, struct udc_mchp_g
 
 	if ((intrusb & USBHS_INTRUSB_RESET_Msk) != 0U) {
 		priv->ep0_state = EP0_STATE_IDLE;
+		/* Drop any SETUPs queued before the reset. */
+		priv->setup_q_tail = priv->setup_q_head;
 		priv->ep0_rx_buf = NULL;
 		priv->ep0_ctrl_write_len = 0U;
 		priv->ep0_ctrl_bytes_received = 0U;
@@ -651,6 +666,7 @@ static void mchp_g2_ep0_state_idle(usbhs_registers_t *regs, struct udc_mchp_g2_d
 {
 	volatile uint32_t *fifo;
 	uint32_t *setup_ptr;
+	uint8_t *setup;
 	uint8_t bmReqType;
 	uint16_t wLen;
 
@@ -658,9 +674,14 @@ static void mchp_g2_ep0_state_idle(usbhs_registers_t *regs, struct udc_mchp_g2_d
 		return;
 	}
 
-	/* Read SETUP packet directly from FIFO. */
+	/* Read SETUP packet directly from FIFO into the next queue slot. Queue it
+	 * (rather than a single buffer) so a back-to-back SETUP arriving before the
+	 * thread runs cannot overwrite/lose the previous request.
+	 */
+	setup = priv->setup_q[priv->setup_q_head & MCHP_G2_SETUP_Q_MASK];
+
 	fifo = (volatile uint32_t *)&regs->ENDPOINT0.USBHS_FIFOX[0];
-	setup_ptr = (uint32_t *)priv->setup;
+	setup_ptr = (uint32_t *)setup;
 
 	setup_ptr[0] = *fifo;
 	setup_ptr[1] = *fifo;
@@ -685,8 +706,8 @@ static void mchp_g2_ep0_state_idle(usbhs_registers_t *regs, struct udc_mchp_g2_d
 		regs->ENDPOINT0.USBHS_CSR0L |=
 			USBHS_ENDPOINT0_CSR0L_PERIPHERAL_EP0_SERVICEDRXPKTRDY_Msk;
 		priv->ep0_state = EP0_STATE_RX;
-		/* Snapshot SETUP bytes; priv->setup may be overwritten by a later ISR. */
-		memcpy(priv->ep0_ctrl_write_setup, priv->setup, MCHP_G2_SETUP_PACKET_SIZE);
+		/* Snapshot SETUP bytes for the control-write data phase. */
+		memcpy(priv->ep0_ctrl_write_setup, setup, MCHP_G2_SETUP_PACKET_SIZE);
 		priv->ep0_ctrl_write_len = wLen;
 		/* Reset per-transfer state; the thread may not have processed the
 		 * previous transfer before the host issues the next SETUP.
@@ -696,6 +717,8 @@ static void mchp_g2_ep0_state_idle(usbhs_registers_t *regs, struct udc_mchp_g2_d
 		atomic_clear(&priv->ep0_rx_pending);
 	}
 
+	/* Publish this SETUP to the thread only after the slot is fully written. */
+	priv->setup_q_head++;
 	k_event_post(&priv->events, MCHP_G2_EVT_SETUP);
 }
 
@@ -1168,10 +1191,8 @@ static int mchp_g2_enqueue_ep0_in(const struct device *dev, usbhs_registers_t *r
 	csr0 |= USBHS_ENDPOINT0_CSR0L_TXPKTRDY_Msk;
 	if (len < mps || (buf->len == 0U && bi->zlp == 0U)) {
 		csr0 |= USBHS_ENDPOINT0_CSR0L_PERIPHERAL_EP0_DATAEND_Msk;
-	} else if (buf->len == 0U && bi->zlp != 0U) {
-		csr0 |= USBHS_ENDPOINT0_CSR0L_PERIPHERAL_EP0_DATAEND_Msk;
-		bi->zlp = 0U;
 	}
+
 	priv->ep0_state = EP0_STATE_TX;
 	regs->ENDPOINT0.USBHS_CSR0L = csr0;
 
