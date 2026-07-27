@@ -155,7 +155,7 @@
 		xosc-startup-time = <500000>;
 		xosc-clock-failure-detection-en = <0>;
 		xosc-safe-clock-frequency = <48>;
-		xosc-usbhs-ref-clock-div = "usbhs-pll-ref-xosc-clock-disabled";
+		xosc-usbhs-ref-clock-div = "usbhs-pll-ref-xosc-clock-div-1";
 	};
 
 	xosc32k: xosc32k {
@@ -199,21 +199,21 @@
 			pll-enable = <1>;
 			pll-on-demand-en = <0>;
 			pll-bandwidth-sel = "bwsel-1";
-			pll-src = "dfll48m";
-			pll-ref-division-factor = <12>;
-			pll-feedback-divider-factor = <240>;
+			pll-src = "xosc";
+			pll-ref-division-factor = <3>;
+			pll-feedback-divider-factor = <300>; /* VCO = 1200 MHz */
 			pll-freq-division-factor-int = <0>;
 			pll-freq-division-factor-rem = <0>;
 
 			pll0out0: pll0out0 {
 				subsystem = <CLOCK_MCHP_PLL0_ID_OUT0>;
-				pll-output-division-factor = <8>;
+				pll-output-division-factor = <10>; /* CPU 1200/10 = 120 MHz */
 				pll-output-en = <1>;
 			};
 
 			pll0out1: pll0out1 {
 				subsystem = <CLOCK_MCHP_PLL0_ID_OUT1>;
-				pll-output-division-factor = <20>; /* 960 MHz / 20 = 48 MHz */
+				pll-output-division-factor = <25>; /* For USBFS 1200/25 = 48 MHz */
 				pll-output-en = <1>;
 			};
 
