@@ -7,4 +7,9 @@ config SOC_FAMILY_MICROCHIP_PIC32CK_SG_GC
 config SOC_FAMILY
 	default "microchip_pic32ck_sg_gc" if SOC_FAMILY_MICROCHIP_PIC32CK_SG_GC
 
+config MCHP_SECURE_PORT_ADDR
+	bool
+	help
+	  SoC has separate secure/non-secure port address spaces.
+
 rsource "*/Kconfig.soc"
