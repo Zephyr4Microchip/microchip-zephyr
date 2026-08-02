@@ -1,7 +1,7 @@
 .. _qt7_add_on_shield:
 
-QT7 Add-on Board
-###############################
+Microchip QT7 Add-on Board
+###########################
 
 Overview
 ********

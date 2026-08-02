@@ -11,6 +11,9 @@
  *
  * Sensor Type: NODE_SELFCAP_SHIELD (Self-capacitance with Driven Shield)
  *
+ * Connection details:
+ *    Connect the QT7 add-on board to the PIC32CM JH CPRO EXT-1 header.
+ *
  * QT7 to PIC32CM JH CPRO Y-line mapping:
  *
  *   Node Configuration (x-mask=shield, y-mask=sensor):

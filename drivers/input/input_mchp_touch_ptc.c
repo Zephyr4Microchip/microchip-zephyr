@@ -356,6 +356,11 @@ static int touch_driver_init(const struct device *dev)
 	data->qtlib_acq_set1.qtm_acq_node_config = &data->ptc_seq_node_cfg1[0];
 	data->qtlib_acq_set1.qtm_acq_node_data = &data->ptc_qtlib_node_stat1[0];
 
+	data->qtlib_key_set1.qtm_touch_key_group_data = &data->qtlib_key_grp_data_set1;
+	data->qtlib_key_set1.qtm_touch_key_group_config = &data->qtlib_key_grp_config_set1;
+	data->qtlib_key_set1.qtm_touch_key_data = &data->qtlib_key_data_set1[0];
+	data->qtlib_key_set1.qtm_touch_key_config = &data->qtlib_key_configs_set1[0];
+
 #if defined(CONFIG_INPUT_MCHP_TOUCH_EN_FREQ_AUTO_TUNE)
 	data->qtm_freq_hop_autotune_config1.freq_option_select =
 		&data->ptc_qtlib_acq_gen1.freq_option_select;
@@ -368,10 +373,6 @@ static int touch_driver_init(const struct device *dev)
 		&data->qtm_freq_hop_autotune_data1;
 	data->qtm_freq_hop_autotune_control1.qtm_freq_hop_autotune_config =
 		&data->qtm_freq_hop_autotune_config1;
-	data->qtlib_key_set1.qtm_touch_key_group_data = &data->qtlib_key_grp_data_set1;
-	data->qtlib_key_set1.qtm_touch_key_group_config = &data->qtlib_key_grp_config_set1;
-	data->qtlib_key_set1.qtm_touch_key_data = &data->qtlib_key_data_set1[0];
-	data->qtlib_key_set1.qtm_touch_key_config = &data->qtlib_key_configs_set1[0];
 #endif /* CONFIG_INPUT_MCHP_TOUCH_EN_FREQ_AUTO_TUNE */
 
 #if defined(CONFIG_INPUT_MCHP_TOUCH_EN_SCROLLER)

@@ -1,6 +1,8 @@
 .. zephyr:code-sample:: input_capacitive_touch_buttons
    :name: Microchip On-board Touch Sensor
-   :relevant-api: input_events
+   :relevant-api: input_events mchp_ptc_interface
+
+   Interact with On-board Touch Sensor
 
 Overview
 ********
@@ -14,19 +16,12 @@ touch button is pressed or released.
 
 For hardware details, refer to the Microchip evaluation kit user guide.
 
----
-
 Requirements
 ************
 
 * A Microchip evaluation kit with an on-board self-capacitance touch button
 * A Microchip MCU with a supported Peripheral Touch Controller (PTC)
-* A device tree configuration that defines the required ``/chosen`` node, for example:
-
-  * ``zephyr,ptc``
-
----
-
+* A device tree configuration that defines the required PTC node, example: ``ptc``.
 
 Touch Configuration (Kconfig)
 *****************************
@@ -67,11 +62,15 @@ Optional options:
   Noise Threshold for a defined number of integrations, that frequency is
   replaced by another frequency from the available frequency pool.
 
-* ``CONFIG_INPUT_MCHP_TOUCH_DATASTREAMER_UNI_DIR``
-  Enables unidirectional touch data streaming. This option is required only if
-  touch data visualization using the Data Visualizer tool is needed.
+Prerequisites
+*************
 
----
+Before building the application, make sure you have updated your workspace and fetched any required binary blobs
+
+.. code-block:: console
+
+   west update hal_microchip
+   west blobs fetch hal_microchip
 
 Building and Running
 ********************
@@ -83,44 +82,27 @@ provided the required device tree bindings are configured.
 Before building the sample, make sure all required modules and binary blobs are
 available.
 
-Fetch Zephyr modules:
-
-.. code-block:: console
-
-   west update
-
-Fetch Microchip HAL binary blobs:
-
-.. code-block:: console
-
-   west blobs fetch hal_microchip
-
-Below is an example of how to build the sample for
-:zephyr:board:`pic32cm_jh01_cpro`:
+Once the workspace is prepared, you can build and flash the application using the following command:
 
 .. zephyr-app-commands::
    :zephyr-app: samples/subsys/input/input_capacitive_touch_buttons
    :board: pic32cm_jh01_cpro
-   :goals: build
+   :goals: build flash
    :compact:
-
-.. code-block:: console
-
-   west build -b pic32cm_jh01_cpro samples/subsys/input/input_capacitive_touch_buttons
-
----
 
 Expected Behavior
 *****************
 
 * Touching the capacitive button generates input press and release events
-* The on-board LED turns on when the touch button is pressed and turns off when
-  the touch is released
-
----
+* On-board LED status will change when the touch button is pressed or released
 
 Data Streaming and Visualization
 ********************************
+
+.. figure:: img/MPLAB_DataVisualizer.webp
+   :height: 246px
+   :align: center
+   :alt:
 
 Touch debug data can be streamed to a host PC and visualized using the
 **Microchip Data Visualizer** tool, which presents touch parameters in a
@@ -135,7 +117,13 @@ When enabled, touch data is transmitted over the serial interface and can be
 viewed in the Data Visualizer GUI.
 
 Detailed instructions for installing and using the Data Visualizer tool are
-available at the following link:
-  Refer to the section **Data Visualization** and the datastremer files are availabel in the sample application
+available at the link follows.
 
-* https://onlinedocs.microchip.com/oxy/GUID-1B9D4635-2151-4E5D-9BFB-EE9E513397AC-en-US-5/GUID-8F2641B0-4039-483B-9BE6-5141EE667743.html
+Note:
+1. Refer to the section **Data Visualization**
+2. Required datastremer files are available in the sample application directory
+
+Visualize Touch Data Using - `MPLAB Data Visualizer`_
+
+.. _MPLAB Data Visualizer:
+   https://onlinedocs.microchip.com/oxy/GUID-1B9D4635-2151-4E5D-9BFB-EE9E513397AC-en-US-5/GUID-8F2641B0-4039-483B-9BE6-5141EE667743.html

@@ -273,6 +273,11 @@ properties:
 
   data-streamer-port:
     type: phandle
+    description: |
+      Datastreamer
+
+      Add a communication port node to visualize the touch run-time data
+      using Microchip Data Visualizer Software
 
   num-freq-steps:
     type: int

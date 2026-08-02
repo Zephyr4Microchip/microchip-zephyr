@@ -1,7 +1,8 @@
-.. _mchp_qt7_sample:
+.. zephyr:code-sample:: mchp_qt7
+   :name: Microchip QT7 Touch Sensor
+   :relevant-api: input_events mchp_ptc_interface
 
-Microchip QT7 Xplained Pro
-##########################
+   Interact with the QT7 add on board Touch Sensor
 
 Overview
 ********
@@ -22,18 +23,12 @@ This sample provides a generic reference implementation and is intended to work
 with **any Microchip development board and touch controller supported by Zephyr**,
 provided the appropriate device tree configuration is present.
 
----
-
 Requirements
 ************
 
 * A Microchip MCU board supported by Zephyr with a capacitive touch controller
 * **QT7 Xplained Pro** extension board
-* Properly configured ``/chosen`` device tree nodes, for example:
-
-  * ``zephyr,ptc``
-
----
+*  A device tree configuration that defines the required PTC node, example: ``ptc``.
 
 Touch Configuration (Kconfig)
 *****************************
@@ -81,7 +76,15 @@ Optional options:
   Enables unidirectional touch data streaming. This option is required only if
   touch data visualization using the Data Visualizer tool is needed.
 
----
+Prerequisites
+*************
+
+Before building the application, make sure you have updated your workspace and fetched any required binary blobs
+
+.. code-block:: console
+
+   west update hal_microchip
+   west blobs fetch hal_microchip
 
 Building and Running
 ********************
@@ -92,31 +95,22 @@ touch controller, as long as the required device tree bindings are configured.
 Before building the sample, make sure all required modules and binary blobs are
 available.
 
-Fetch Zephyr modules:
-
-.. code-block:: console
-
-   west update
-
-Fetch Microchip HAL binary blobs:
-
-.. code-block:: console
-
-   west blobs fetch hal_microchip
-
-Build the sample:
+Once the workspace is prepared, you can build and flash the application using the following command:
 
 .. zephyr-app-commands::
    :zephyr-app: samples/shields/mchp_qt7
    :board: pic32cm_jh01_cpro
+   :shield: qt7_pic32cm_jh01_cpro
    :goals: build
    :compact:
 
-.. code-block:: console
+Connection Details
+*******************
 
-   west build -b pic32cm_jh01_cpro samples/shields/mchp_qt7 --shield qt7_pic32cm_jh01_cpro
+The connection detail is available in **qt7_<boards>.overlay** file
 
----
+Example:
+boards/shields/mchp_touch_qt7/qt7_pic32cm_jh01_cpro.overlay
 
 Expected Output
 ***************
@@ -128,10 +122,13 @@ After flashing the application:
 * Touch functionality remains responsive even in the presence of moisture,
   depending on the selected driven shield mode and MCU capabilities
 
----
-
 Data Streaming and Visualization
 ********************************
+
+.. figure:: img/MPLAB_DataVisualizer.webp
+   :height: 246px
+   :align: center
+   :alt:
 
 Touch diagnostic data can be streamed to a host PC and visualized using the
 **Microchip Data Visualizer** tool, which displays touch parameters in a
@@ -150,12 +147,19 @@ debugging, tuning, and validating touch performance.
 Detailed instructions for installing and using the Data Visualizer tool are
 available at the following link:
 
-* https://developerhelp.microchip.com/xwiki/bin/view/applications/touch-gesture/mplab-data-visualizer-touch-plugin/visualize-touch-data-using-mplab-data-visualizer/
+Note:
+* Refer to the section **Data Visualization**
+* Required datastremer files are available in the sample application directory
 
----
+Visualize Touch Data Using - `MPLAB Data Visualizer`_
+
+.. _MPLAB Data Visualizer:
+   https://onlinedocs.microchip.com/oxy/GUID-1B9D4635-2151-4E5D-9BFB-EE9E513397AC-en-US-5/GUID-8F2641B0-4039-483B-9BE6-5141EE667743.html
 
 References
 **********
 
-* Microchip QT7 Xplained Pro Extension Board documentation
-  [QT7 Xplained Pro User Guide](https://ww1.microchip.com/downloads/aemDocuments/documents/OTH/ProductDocuments/UserGuides/QT7XplainedProUserGuide50002725A.pdf "QT7 Xplained Pro")
+`QT7 Xplained Pro User Guide`_
+
+.. _QT7 Xplained Pro User Guide:
+   https://ww1.microchip.com/downloads/aemDocuments/documents/OTH/ProductDocuments/UserGuides/QT7XplainedProUserGuide50002725A.pdf
