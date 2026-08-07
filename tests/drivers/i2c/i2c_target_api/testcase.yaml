@@ -85,6 +85,8 @@ tests:
       - pic32cx_sg41_cult
       - pic32cx_sg61_cult
       - pic32cm_jh01_cpro
+      - pic32ck_gc01_cult
+      - pic32ck_sg01_cult
     integration_platforms:
       - max32690evkit/max32690/m4
       - nrf54l15dk/nrf54l15/cpuapp
