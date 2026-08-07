@@ -29,7 +29,7 @@
 	IF_ENABLED(DT_NODE_EXISTS(DT_NODELABEL(nodelabel)),            \
 		(DT_REG_ADDR(DT_NODELABEL(nodelabel)),))
 
-#ifdef CONFIG_ARM_TRUSTZONE_M
+#ifdef CONFIG_MCHP_SECURE_PORT_ADDR
 /**
  * @brief Array of secure port base addresses for the MCHP G1 series.
  *
@@ -68,7 +68,7 @@ static const uint32_t mchp_port_addrs[] = {
 	MCHP_PORT_ADDR_OR_NONE(portg)
 };
 
-#endif /* CONFIG_ARM_TRUSTZONE_M */
+#endif /* CONFIG_MCHP_SECURE_PORT_ADDR */
 
 /* clang-format on */
 
@@ -93,13 +93,13 @@ static void pinctrl_pinmux(const pinctrl_soc_pin_t *pin)
 	bool is_odd = pin_num & 1;
 	uint32_t idx = pin_num / 2U;
 
-#ifdef CONFIG_ARM_TRUSTZONE_M
+#ifdef CONFIG_MCHP_SECURE_PORT_ADDR
 	/* if TrustZone is enabled, use the secure port base address */
 	pRegister = (port_group_registers_t *)mchp_secure_port_addrs[port_id];
 #else
 	/* if TrustZone is not enabled, use the default port base address */
 	pRegister = (port_group_registers_t *)mchp_port_addrs[port_id];
-#endif /* CONFIG_ARM_TRUSTZONE_M */
+#endif /* CONFIG_MCHP_SECURE_PORT_ADDR */
 
 	if (pRegister != NULL) {
 		/* Each pinmux register holds the config for two pins.  The
@@ -136,13 +136,13 @@ static void pinctrl_set_flags(const pinctrl_soc_pin_t *pin)
 	uint8_t pin_num = MCHP_PINMUX_PIN_GET(pin->pinmux);
 	uint8_t port_id = MCHP_PINMUX_PORT_GET(pin->pinmux);
 
-#ifdef CONFIG_ARM_TRUSTZONE_M
+#ifdef CONFIG_MCHP_SECURE_PORT_ADDR
 	/* if TrustZone is enabled, use the secure port base address */
 	pRegister = (port_group_registers_t *)mchp_secure_port_addrs[port_id];
 #else
 	/* if TrustZone is not enabled, use the default port base address */
 	pRegister = (port_group_registers_t *)mchp_port_addrs[port_id];
-#endif /* CONFIG_ARM_TRUSTZONE_M */
+#endif /* CONFIG_MCHP_SECURE_PORT_ADDR */
 
 	if (pRegister != NULL) {
 

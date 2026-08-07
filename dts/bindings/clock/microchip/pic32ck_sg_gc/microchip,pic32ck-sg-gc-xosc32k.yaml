@@ -71,7 +71,7 @@ properties:
       - "higher-than-cgm12"
       - "higher-than-cgm13"
       - "highest-gain-mode-value"
-    default: "higher-than-cgm7"
+    default: "lower-gain-mode-value"
     description: |
       control the gain of the external crystal oscillator
 
@@ -117,14 +117,13 @@ properties:
 
   xosc32k-rtc-clk-selection-en:
     type: int
-    enum:
-      - 0
-      - 1
-    default: 0
+    default: 1
     description: |
-      xosc RTC clock selection
-      0 - enable
-      1-  disable
+      RTC source clock selection
+      0: osculp32K
+      1: osculp1k
+      2: xosc32k
+      3: xosc1k
 
   xosc32k-cfd-en:
     type: int

@@ -82,7 +82,7 @@ properties:
     enum:
       - 0
       - 1
-    default: 0
+    default: 1
     description: |
       If enabled, clock available only after DFLL is locked (Fine lock)
 
@@ -94,7 +94,7 @@ properties:
     enum:
       - 0
       - 1
-    default: 0
+    default: 1
     description: |
       Disable quick lock
 
@@ -106,7 +106,7 @@ properties:
     enum:
       - 0
       - 1
-    default: 0
+    default: 1
     description: |
       Disable chill cycle
 
@@ -118,7 +118,7 @@ properties:
     enum:
       - 0
       - 1
-    default: 0
+    default: 1
     description: |
       Lose Lock After Wake
 
@@ -132,7 +132,7 @@ properties:
     enum:
       - 0
       - 1
-    default: 0
+    default: 1
     description: |
       Stable DFLL48M Frequency
 
@@ -147,7 +147,7 @@ properties:
 
   dfll48m-multiply-factor:
     type: int
-    default: 0
+    default: 1
     description: |
       Determines the ratio of the CLK_DFLL output frequency to the CLK_DFLL_REF input frequency
       (0 - 65535)

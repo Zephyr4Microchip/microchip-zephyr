@@ -94,7 +94,7 @@ properties:
       - 250000
       - 500000
       - 1000000
-    default: 31
+    default: 500000
     description: |
       XOSC start-up time in micro seconds
 
@@ -119,7 +119,7 @@ properties:
       - 12
       - 24
       - 48
-    default: 0
+    default: 48
     description: |
       xosc safe clock frequency in MHz
 

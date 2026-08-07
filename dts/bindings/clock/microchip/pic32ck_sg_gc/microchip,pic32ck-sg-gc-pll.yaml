@@ -79,7 +79,7 @@ child-binding:
         - "gclk11"
         - "xosc"
         - "dfll48m"
-      default: "xosc"
+      default: "dfll48m"
       description: |
         Reference source clock selection
 
