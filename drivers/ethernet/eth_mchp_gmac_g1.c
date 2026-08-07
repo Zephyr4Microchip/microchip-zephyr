@@ -459,7 +459,20 @@ static int gmac_init(const struct device *dev, gmac_registers_t *gmac)
 #ifdef CONFIG_SOC_FAMILY_MICROCHIP_PIC32CK_SG_GC
 			    ETH_NCFGR_DBW(1) |
 #endif
-			    GMAC_NCFGR_RXCOEN_Msk;
+			    0;	/* GMAC_NCFGR_RXCOEN intentionally NOT set (see note below) */
+
+	/*
+	 * NOTE: RX checksum offload (GMAC_NCFGR_RXCOEN) is deliberately left
+	 * disabled. This driver never consumes the RX descriptor checksum
+	 * status (gmac_find_valid_frame only checks SOF/EOF and no
+	 * NET_PKT_RX_CHKSUM_* flags are set), so with
+	 * CONFIG_NET_CHECKSUM_OFFLOAD=y the net stack would skip its own
+	 * software verification while the MAC result is silently discarded -
+	 * frames with bad IP/TCP/UDP checksums would be accepted instead of
+	 * dropped. Keeping RXCOEN off restores software checksum verification
+	 * and matches MPLAB Harmony (checksumOffloadRx = TCPIP_MAC_CHECKSUM_NONE).
+	 * Note: this is a patch to vendored Zephyr and is lost on `west update`.
+	 */
 
 	gmac->GMAC_NCR = GMAC_NCR_CLRSTAT_Msk | GMAC_NCR_MPE_Msk;
 	gmac->GMAC_IDR = UINT32_MAX;
@@ -907,6 +920,24 @@ static int eth_mchp_initialize(const struct device *dev)
 		return retval;
 	}
 
+	/*
+	 * Runtime verification of GCLK_ETH (local diagnostic patch, lost on
+	 * `west update`): clock_control_get_rate() on a GCLKPERIPH reads the
+	 * actual GEN source field from PCHCTRL[41]/[42] and reports that
+	 * generator's real rate. This is separate from MCK (which is only used
+	 * to derive the MDC clock for MDIO). Datasheet limits (DS60001795H
+	 * Table 52-18): fGCLK_ETH <= 25 MHz, fGCLK_ETH_TSU < fAHB.
+	 */
+	{
+		uint32_t gclk_tx_freq = 0;
+		uint32_t gclk_tsu_freq = 0;
+
+		(void)clock_control_get_rate(DEVICE_DT_GET(DT_NODELABEL(clock)), cfg->gclk_tx_sys,
+					     &gclk_tx_freq);
+		(void)clock_control_get_rate(DEVICE_DT_GET(DT_NODELABEL(clock)), cfg->gclk_tsu_sys,
+					     &gclk_tsu_freq);
+		LOG_INF("GCLK_ETH_TX=%u Hz GCLK_ETH_TSU=%u Hz", gclk_tx_freq, gclk_tsu_freq);
+	}
 #endif /* CONFIG_SOC_FAMILY_MICROCHIP_PIC32CK_SG_GC */
 
 	retval = pinctrl_apply_state(cfg->pinctrl_cfg, PINCTRL_STATE_DEFAULT);

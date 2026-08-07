@@ -45,6 +45,7 @@ struct phy_mii_dev_data {
 	bool gigabit_supported;
 	bool autoneg_in_progress;
 	k_timepoint_t autoneg_timeout;
+	k_timepoint_t trace_tp;
 };
 
 /* Offset to align capabilities bits of 1000BASE-T Control and Status regs */
@@ -189,9 +190,35 @@ static int update_link_state(const struct device *dev)
 
 	link_up = IS_BIT_SET(bmsr_reg, MII_BMSR_LINK_STATUS_BIT);
 	/* If link is down, we can stop here. */
+	// if (!link_up) {
+	// 	data->state.speed = 0;
+	// 	if (link_up != data->state.is_up) {
+	// 		data->state.is_up = false;
+	// 		LOG_INF("PHY (%d) is down", cfg->phy_addr);
+	// 		return 0;
+	// 	}
+	// 	return -EAGAIN;
+	// }
 	if (!link_up) {
 		data->state.speed = 0;
+
 		if (link_up != data->state.is_up) {
+			uint16_t bmcr = 0;
+			uint16_t bmsr = 0;
+			uint16_t anar = 0;
+			uint16_t anlpar = 0;
+			uint16_t special = 0;
+
+			phy_mii_reg_read(dev, MII_BMCR, &bmcr);
+			phy_mii_reg_read(dev, MII_BMSR, &bmsr);
+			phy_mii_reg_read(dev, MII_ANAR, &anar);
+			phy_mii_reg_read(dev, MII_ANLPAR, &anlpar);
+			phy_mii_reg_read(dev, 0x1F, &special);
+
+			LOG_INF("PHY (%d) DOWN: BMCR=0x%04x BMSR=0x%04x "
+				"ANAR=0x%04x ANLPAR=0x%04x SPECIAL=0x%04x",
+				cfg->phy_addr, bmcr, bmsr, anar, anlpar, special);
+
 			data->state.is_up = false;
 			LOG_INF("PHY (%d) is down", cfg->phy_addr);
 			return 0;
@@ -256,9 +283,60 @@ static int check_autonegotiation_completion(const struct device *dev)
 
 	if (!IS_BIT_SET(bmsr_reg, MII_BMSR_AUTONEG_COMPLETE_BIT)) {
 		if (sys_timepoint_expired(data->autoneg_timeout)) {
+			uint16_t dbg_bmcr = 0;
+			uint16_t dbg_anar = 0;
+			uint16_t dbg_anlpar = 0;
+			uint16_t dbg_physts = 0;
+
+			phy_mii_reg_read(dev, MII_BMCR, &dbg_bmcr);
+			phy_mii_reg_read(dev, MII_ANAR, &dbg_anar);
+			phy_mii_reg_read(dev, MII_ANLPAR, &dbg_anlpar);
+			phy_mii_reg_read(dev, 0x1F, &dbg_physts);
+
+			LOG_INF("PHY (%d) AUTONEG TIMEOUT: BMCR=0x%04x BMSR=0x%04x "
+				"ANAR=0x%04x ANLPAR=0x%04x PHYSTS=0x%04x",
+				cfg->phy_addr, dbg_bmcr, bmsr_reg, dbg_anar, dbg_anlpar,
+				dbg_physts);
+
 			LOG_DBG("PHY (%d) auto-negotiate timeout", cfg->phy_addr);
 			return -ETIMEDOUT;
 		}
+
+		/*
+		 * Local diagnostic (lost on `west update`): log LAN8720A autoneg
+		 * progress once per second while autoneg is in progress, so the boot
+		 * log shows WHY it never completes (DS00002165):
+		 *  - BMSR (reg 1): bit5 autoneg-complete, bit2 link status
+		 *  - reg 27 bit 4: XPOL = RX polarity inverted (1 = reversed)
+		 *  - reg 29 interrupt flags: INT6 aneg-complete, INT4 link-down,
+		 *    INT3 LP-ack, INT2 parallel-detect fault, INT1 page-received
+		 *  - reg 31: bit12 Autodone, bits 4:2 speed (010=100TX-HD,
+		 *    110=100TX-FD, 001=10T-HD, 101=10T-FD)
+		 */
+		if (sys_timepoint_expired(data->trace_tp)) {
+			uint16_t r27 = 0;
+			uint16_t r29 = 0;
+			uint16_t r31 = 0;
+
+			data->trace_tp = sys_timepoint_calc(K_SECONDS(1));
+
+			phy_mii_reg_read(dev, 0x1B, &r27);
+			phy_mii_reg_read(dev, 0x1D, &r29);
+			phy_mii_reg_read(dev, 0x1F, &r31);
+
+			LOG_INF("PHY (%d) TRACE: BMSR=0x%04x (ANEGCMPL=%d LINK=%d) "
+				"R27=0x%04x (XPOL=%d) R29=0x%04x (INT6_ANEGCMPL=%d "
+				"INT4_LINKDN=%d INT3_LPACK=%d INT2_PDFAULT=%d "
+				"INT1_PAGERX=%d) R31=0x%04x (AUTODONE=%d SPD=%d)",
+				cfg->phy_addr, bmsr_reg,
+				IS_BIT_SET(bmsr_reg, MII_BMSR_AUTONEG_COMPLETE_BIT),
+				IS_BIT_SET(bmsr_reg, MII_BMSR_LINK_STATUS_BIT),
+				r27, IS_BIT_SET(r27, 4),
+				r29, IS_BIT_SET(r29, 6), IS_BIT_SET(r29, 4),
+				IS_BIT_SET(r29, 3), IS_BIT_SET(r29, 2), IS_BIT_SET(r29, 1),
+				r31, IS_BIT_SET(r31, 12), (r31 >> 2) & 0x7);
+		}
+
 		return -EINPROGRESS;
 	}
 

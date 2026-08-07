@@ -46,6 +46,17 @@ config CLOCK_CONTROL_MCHP_PIC32CK_SG_GC
 	help
 	  Enable clock controller driver for Microchip PIC32CK SG/GC SoC family.
 
+config CLOCK_CONTROL_MCHP_SKIP_AVREG
+	bool "Skip Additional Voltage Regulator (AVREG) enable"
+	default n
+	help
+	  On some boards, the VREG_USB pin for the additional voltage
+	  regulator is not connected. When AVREG is enabled, the driver
+	  waits for ADDVREGRDY to assert, which never happens on these
+	  boards, causing PLL initialization to timeout. Enable this
+	  option to skip the AVREG enable and wait for boards where the
+	  additional voltage regulator circuit is not present.
+
 if CLOCK_CONTROL_MCHP_COMMON
 
 config CLOCK_CONTROL_MCHP_CONFIG_BOOTUP

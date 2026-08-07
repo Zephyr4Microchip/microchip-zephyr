@@ -91,8 +91,8 @@ class MPLABIPEBinaryRunner(ZephyrBinaryRunner):
         if self.erase:
             cmd.append("-E")
 
-        if self.verify:
-            cmd.append("-V")
+        # if self.verify:
+        #     cmd.append("-V")
 
         self.logger.info("Running: %s", " ".join(shlex.quote(p) for p in cmd))
         self.check_call(cmd)

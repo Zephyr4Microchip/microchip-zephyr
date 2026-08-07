@@ -123,6 +123,8 @@ SysbuildKconfigBasicNoModules.txt
 TextEncoding.txt
 YAMLLint.txt
 ZephyrModuleFile.txt
+build/*
+*/build/*
 # zephyr-keep-sorted-stop
 
 # Node dependecies

@@ -418,6 +418,15 @@ static uint32_t i2c_segment_len(struct i2c_msg *msgs, uint8_t num_msgs, uint8_t 
 	total = msgs[start_idx].len;
 	dir = msgs[start_idx].flags & I2C_MSG_RW_MASK;
 
+	/* A zero-length message forms its own segment so that it never
+	 * pulls bytes from an empty buffer when combined with a
+	 * neighbouring message of the same direction.
+	 */
+	if (total == 0) {
+		*next_idx = start_idx + 1;
+		return 0;
+	}
+
 	for (i = start_idx + 1; i < num_msgs; i++) {
 		if ((msgs[i].flags & I2C_MSG_RW_MASK) != dir) {
 			break;
@@ -498,7 +507,12 @@ static int i2c_validate_msgs(struct i2c_msg *msgs, uint8_t num_msgs)
 
 	for (uint8_t i = 0; i < num_msgs; i++) {
 
-		if ((msgs[i].buf == NULL) || (msgs[i].len == 0)) {
+		/* Allow zero-length messages (e.g. the SMBus-style quick-write
+		 * probe used by the I2C shell "scan" command). Only the
+		 * buffer pointer must be valid; a zero-length message just
+		 * transfers the address byte (with ACK/NACK) and stops.
+		 */
+		if (msgs[i].buf == NULL) {
 			return -EINVAL;
 		}
 

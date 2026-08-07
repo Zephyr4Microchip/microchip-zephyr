@@ -1607,6 +1607,7 @@ void clock_pll_init(const struct device *dev, struct clock_pll_init *pll_init)
 	}
 
 	if (pll_init->enable != 0) {
+#ifndef CONFIG_CLOCK_CONTROL_MCHP_SKIP_AVREG
 		/* Enable Additional Voltage Regulator */
 		supc_regs->SUPC_VREGCTRL |= SUPC_VREGCTRL_AVREGEN_Msk;
 		if (WAIT_FOR(((supc_regs->SUPC_STATUS & SUPC_STATUS_ADDVREGRDY_Msk) ==
@@ -1615,6 +1616,10 @@ void clock_pll_init(const struct device *dev, struct clock_pll_init *pll_init)
 			LOG_ERR("%s: SUPC_STATUS timeout on writing SUPC_VREGCTRL", __func__);
 			return;
 		}
+#else
+		LOG_INF("%s: Skipping AVREG enable (CONFIG_CLOCK_CONTROL_MCHP_SKIP_AVREG)",
+			__func__);
+#endif /* CONFIG_CLOCK_CONTROL_MCHP_SKIP_AVREG */
 
 		/* Set PLL clock request as on */
 		data->pll_on_request |= BIT(inst);
