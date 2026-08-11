@@ -1,0 +1,337 @@
+# Copyright (c) 2026 Microchip Technology Inc.
+# SPDX-License-Identifier: Apache-2.0
+
+title: Microchip Peripheral Touch Controller - G2
+
+description: |
+  Microchip Peripheral Touch Driver
+
+  This binding defines the configuration for the Microchip PTC G2 driver.
+  It extends microchip,ptc-controller.yaml by adding device-specific properties
+  and hardware capabilities required for G2-based PTC implementations.
+  Group g2 PTC Driver supports following hardware peripherals:
+    - module name="PTC" id="06273" version="1.a.0"
+
+  On G2 devices, PTC shares the ADC peripheral. The ADC driver
+  cannot be used when PTC is enabled.
+
+include: microchip,ptc-controller.yaml
+
+compatible: "microchip,ptc-controller-g2"
+
+properties:
+  clock-names:
+    required: true
+    enum:
+      - "mclk_ptc"
+      - "mclk_adc"
+
+  def-sensor-type:
+    type: int
+    required: true
+    enum:
+      - 0x80
+      - 0x82
+      - 0x40
+    description: |
+      Define Sensor Type
+
+      List of sensor types:
+      +===========+===========================+
+      | value     |       Type                |
+      +===========+===========================+
+      | 0x80      |  NODE_SELFCAP             |
+      +-----------+---------------------------+
+      | 0x82      |  NODE_SELFCAP_SHIELD_2L   |
+      +-----------+---------------------------+
+      | 0x40      |  NODE_MUTUAL              |
+      +-----------+---------------------------+
+
+  adc-timebase:
+    type: int
+    required: true
+    description: |
+      ADC Timebase:
+
+      Number of CLK_APB cycles corresponding to at least one microsecond.
+      Calculation: CLK_APB x 0.000001
+
+      Ensures accurate internal ADC timing independent of clock frequency.
+
+      Example: 20 for 20MHz APB clock
+
+  adc-pump-enable:
+    type: int
+    required: true
+    enum:
+      - 0
+      - 1
+    description: |
+      ADC Charge Pump Enable:
+
+      It Controls the internal ADC voltage pump feature.
+
+      The pump must be disabled when operating above 4.5V due to
+      potential leakage affecting PTC performance.
+
+      List Of Options:
+      +===========+=========+============================+
+      | value     | Type    | Description                |
+      +===========+=========+============================+
+      | 0         | Disable | Disable it if the          |
+      |           |         | VDD is greater than 4.5V   |
+      +-----------+---------+----------------------------+
+      | 1         | Enable  | Enable it if the           |
+      |           |         | VDD is lesser than 4.5V    |
+      +-----------+---------+----------------------------+
+
+  adc-prescaler:
+    type: string
+    required: true
+    enum:
+      - "ADC_PRSC_DIV_SEL_2"
+      - "ADC_PRSC_DIV_SEL_3"
+      - "ADC_PRSC_DIV_SEL_4"
+      - "ADC_PRSC_DIV_SEL_5"
+      - "ADC_PRSC_DIV_SEL_6"
+      - "ADC_PRSC_DIV_SEL_7"
+      - "ADC_PRSC_DIV_SEL_8"
+      - "ADC_PRSC_DIV_SEL_9"
+      - "ADC_PRSC_DIV_SEL_10"
+      - "ADC_PRSC_DIV_SEL_11"
+      - "ADC_PRSC_DIV_SEL_12"
+      - "ADC_PRSC_DIV_SEL_13"
+      - "ADC_PRSC_DIV_SEL_14"
+      - "ADC_PRSC_DIV_SEL_15"
+      - "ADC_PRSC_DIV_SEL_16"
+      - "ADC_PRSC_DIV_SEL_17"
+      - "ADC_PRSC_DIV_SEL_18"
+      - "ADC_PRSC_DIV_SEL_19"
+      - "ADC_PRSC_DIV_SEL_20"
+      - "ADC_PRSC_DIV_SEL_21"
+      - "ADC_PRSC_DIV_SEL_22"
+      - "ADC_PRSC_DIV_SEL_23"
+      - "ADC_PRSC_DIV_SEL_24"
+      - "ADC_PRSC_DIV_SEL_25"
+      - "ADC_PRSC_DIV_SEL_26"
+      - "ADC_PRSC_DIV_SEL_27"
+      - "ADC_PRSC_DIV_SEL_28"
+      - "ADC_PRSC_DIV_SEL_29"
+      - "ADC_PRSC_DIV_SEL_30"
+      - "ADC_PRSC_DIV_SEL_31"
+      - "ADC_PRSC_DIV_SEL_32"
+    default: "ADC_PRSC_DIV_SEL_2"
+    description: |
+      ADC Prescaler:
+
+      prescaler for the ADC peripheral
+
+  cc-cal-precision:
+    type: int
+    required: true
+    default: 40
+    description: |
+      Precision Value Of CC Calibration:
+
+      Acceptable deviation in measured signal value from midpoint
+      during calibration. Ensures calibrated values fall within
+      PTC Signal Mid Value +/- Precision
+
+      Valid range: 0 to 255
+
+child-binding:
+  properties:
+    prescaler:
+      type: string
+      enum:
+        - "PRSC_DIV_SEL_1"
+        - "PRSC_DIV_SEL_2"
+        - "PRSC_DIV_SEL_4"
+        - "PRSC_DIV_SEL_6"
+        - "PRSC_DIV_SEL_8"
+        - "PRSC_DIV_SEL_10"
+        - "PRSC_DIV_SEL_12"
+        - "PRSC_DIV_SEL_14"
+        - "PRSC_DIV_SEL_16"
+        - "PRSC_DIV_SEL_18"
+        - "PRSC_DIV_SEL_20"
+        - "PRSC_DIV_SEL_22"
+        - "PRSC_DIV_SEL_24"
+        - "PRSC_DIV_SEL_26"
+        - "PRSC_DIV_SEL_28"
+        - "PRSC_DIV_SEL_30"
+      default: "PRSC_DIV_SEL_1"
+      description: |
+        PTC Prescaler:
+
+        prescaler for the PTC peripheral
+
+    rselect:
+      type: string
+      enum:
+        - "RSEL_VAL_0"
+        - "RSEL_VAL_20"
+        - "RSEL_VAL_50"
+        - "RSEL_VAL_70"
+        - "RSEL_VAL_80"
+        - "RSEL_VAL_100"
+        - "RSEL_VAL_120"
+        - "RSEL_VAL_200"
+      default: "RSEL_VAL_0"
+      description:
+        PTC Series Resistor Setting
+
+        For Mutual cap mode, this series resistor
+        is switched internally on the Y-pin.
+        For Self cap mode, thes series resistor
+        is switched internally on the Sensor pin.
+
+        +===============+===============================+
+        | value         | Description                   |
+        +===============+===============================+
+        | "RSEL_VAL_0"  | sets internal series resistor |
+        |               | to 0 ohms                     |
+        +---------------+-------------------------------+
+        | "RSEL_VAL_20" | sets internal series resistor |
+        |               | to 20K ohms                   |
+        +---------------+-------------------------------+
+        | "RSEL_VAL_50" | sets internal series resistor |
+        |               | to 50K ohms                   |
+        +---------------+-------------------------------+
+        |     ...       |            ...                |
+        +---------------+-------------------------------+
+        |"RSEL_VAL_200" | sets internal series resistor |
+        |               | to 200K ohms                  |
+        +---------------+-------------------------------+
+
+    digital-gain:
+      type: string
+      enum:
+        - "GAIN_1"
+        - "GAIN_2"
+        - "GAIN_4"
+        - "GAIN_8"
+        - "GAIN_16"
+      default: "GAIN_1"
+      description: |
+        Digital Gain
+
+        Accumulated sum is scaled to Digital Gain.
+
+    analog-gain:
+      type: string
+      enum:
+        - "GAIN_1"
+        - "GAIN_2"
+        - "GAIN_4"
+        - "GAIN_1_5"
+      default: "GAIN_1"
+      description: |
+        Analog Gain
+
+        Integration capacitor adjusted to control integrator gain.
+
+    filter-level:
+      type: string
+      enum:
+        - "FILTER_LEVEL_1"
+        - "FILTER_LEVEL_2"
+        - "FILTER_LEVEL_4"
+        - "FILTER_LEVEL_8"
+        - "FILTER_LEVEL_16"
+        - "FILTER_LEVEL_32"
+        - "FILTER_LEVEL_64"
+        - "FILTER_LEVEL_128"
+        - "FILTER_LEVEL_256"
+      default: "FILTER_LEVEL_16"
+      description: |
+        Filter Level (or) Oversampling
+
+        Number of samples to accumulate for each measurement.
+
+examples:
+  - |
+   /* Please note the compatible property prior to implementation.
+    *
+    * In this example, the "microchip,ptc-controller-g2" compatible property
+    * is included for reference purposes only.
+    * This property must match the corresponding DTS node property.
+    */
+
+    &ptc {
+      compatible = "microchip,ptc-controller-g2",
+                   "microchip,ptc-controller";
+
+      reg = <0x42002800 0x400>;
+      acquisition-size = <12>;
+      interrupts = <13 0>;
+      interrupt-names = "ptc-eoc";
+
+      clocks = <&mclkperiph CLOCK_MCHP_MCLKPERIPH_ID_APBC_PTC>,
+               <&mclkperiph CLOCK_MCHP_MCLKPERIPH_ID_APBC_ADC0>;
+      clock-names = "mclk_ptc", "mclk_adc";
+
+      def-ptc-cal-option = "CAL_AUTO_TUNE_NONE";
+      def-ptc-tau-target = "CAL_CHRG_5TAU";
+      def-touch-measurement-period-ms = <20>;
+      def-sensor-type = <0x82>;
+      def-sel-freq-init = "FREQ_SEL_0";
+      def-touch-det-int = <4>;
+      def-anti-tch-det-int = <5>;
+      def-anti-tch-recal-thrshld = "RECAL_100";
+      def-tch-drift-rate = <20>;
+      def-anti-tch-drift-rate = <5>;
+      def-drift-hold-time = <20>;
+      def-reburst-mode = "REBURST_UNRESOLVED";
+      def-max-on-duration = <0>;
+      def-num-channels = <0x1>;
+      pinctrl-0 = <&ptc_default>;
+      pinctrl-names = "default";
+      def-num-sensors = <0x1>;
+      num-freq-steps = <3>;
+      def-median-filter-frequencies = "FREQ_SEL_0",
+                                      "FREQ_SEL_1",
+                                      "FREQ_SEL_2";
+      def-freq-autotune-enable = <1>;
+      freq-autotune-max-variance = <15>;
+      freq-autotune-count-in = <6>;
+      data-streamer-port = <&sercom1>;
+
+      /* Shared ADC configuration */
+      adc-timebase = <20>;
+      adc-pump-enable = <1>;
+      adc-prescaler = "ADC_PRSC_DIV_SEL_32";
+      cc-cal-precision = <60>;
+
+      /* node parameters */
+      node_0_params:touch_node0 {
+        x-mask = <41>;
+        x-names = "DRIVEN_SHIELD";
+        y-mask = <40>;
+        y-names = "BUTTON_0";
+        zephyr,code = <INPUT_KEY_0>;
+        csd = <10>;
+        rselect = "RSEL_VAL_0";
+        prescaler = "PRSC_DIV_SEL_30";
+        digital-gain = "GAIN_1";
+        analog-gain = "GAIN_1";
+        filter-level = "FILTER_LEVEL_16";
+      };
+
+      key_0_params:touch_key0 {
+        threshold = <20>;
+        hysteresis = "HYST_25";
+        aks-group = "NO_AKS_GROUP";
+      };
+
+      status = "okay";
+    };
+    /* The following pincontrol node
+     * is located under the pinctrl node
+     */
+    ptc_default:ptc_default {
+        group1 {
+          pinmux = <PB8P_PTC_PAD40>,
+                   <PB9P_PTC_PAD41>;
+        };
+    };

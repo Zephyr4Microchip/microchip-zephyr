@@ -34,6 +34,20 @@ properties:
     type: string
     required: true
 
+  acquisition-size:
+    type: int
+    enum:
+      - 10
+      - 12
+    default: 10
+    description: |
+      acquisition-size (in bits)
+
+      This property enables the appropriate library for the PTC peripheral.
+      For example,
+      if the PTC uses a 12-bit ADC resolution,
+      this property enables the 12-bit key and 12-bit frequency-hop auto-tune modules.
+
   def-touch-measurement-period-ms:
     type: int
     default: 20
@@ -369,6 +383,19 @@ properties:
       Define Number Of scrollers
 
       Defines the number of scrollers (sliders or wheels).
+
+  sensor-drift-step:
+    type: int
+    default: 1
+    description: |
+      Sensor Drift Step
+
+      Specifies the amount of drift applied during each drift interval.
+
+      Note:
+      The required value must be greater than 0
+
+      This option is supported only for "acquisition-size = <12>".
 
 child-binding:
   description: |
