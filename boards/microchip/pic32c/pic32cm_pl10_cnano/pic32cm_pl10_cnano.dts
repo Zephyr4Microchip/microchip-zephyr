@@ -8,6 +8,7 @@
 #include <microchip/pic32c/pic32cm_pl/pic32cm_pl10/pic32cm6408pl10048.dtsi>
 #include "pic32cm_pl10_cnano-pinctrl.dtsi"
 #include <zephyr/dt-bindings/input/input-event-codes.h>
+#include <zephyr/dt-bindings/input/mchp_pic32cm_pl10_ptc.h>
 
 / {
 	model = "PIC32CM PL10 Curiosity Nano";
@@ -23,6 +24,63 @@
 
 	aliases {
 		led0 = &led0;
+	};
+
+	ext1_header: cnano-touch-adapter-connector1 {
+		compatible = "microchip,xpro-header";
+		#gpio-cells = <2>;
+		gpio-map-mask = <0xffffffff 0xffffffc0>;
+		gpio-map-pass-thru = <0 0x3f>;
+
+		/* dts-format off */
+		gpio-map = <0  0 &porta  4 0>, /* Y5: Driven Shield */
+			   <1  0 &porta 29 0>, /* Y1: Button 1      */
+			   <2  0 &porta  7 0>, /* LED0: Slider      */
+			   <3  0 &porta 28 0>, /* LED6: Button 1    */
+			   <4  0 &porta 19 0>, /* Y2: Slider        */
+			   <5  0 &porta 18 0>, /* Y3: Slider        */
+			   <6  0 &porta  5 0>, /* Y4: Slider        */
+			   <7  0 &porta 17 0>, /* Y0: Button 2      */
+			   <8  0 &porta  0 0>, /* LED7: Button 2    */
+			   <9  0 &porta  1 0>, /* LED1: Slider      */
+			   <10 0 &porta  3 0>, /* NC                */
+			   <11 0 &porta  2 0>, /* NC                */
+			   <12 0 &porta  6 0>, /* LED2: Slider      */
+			   <13 0 &porta 26 0>, /* LED3: Slider      */
+			   <14 0 &porta 16 0>, /* LED4: Slider      */
+			   <15 0 &porta 27 0>; /* LED5: Slider      */
+					       /* GND               */
+					       /* +3.3V             */
+		/* dts-format on */
+	};
+
+	ext2_header: cnano-touch-adapter-connector2 {
+		compatible = "microchip,xpro-header";
+		#gpio-cells = <2>;
+		gpio-map-mask = <0xffffffff 0xffffffc0>;
+		gpio-map-pass-thru = <0 0x3f>;
+
+		/* dts-format off */
+					       /*                  Shared */
+		gpio-map = <0  0 &porta 22 0>, /* ADC0/AIN[11]            */
+			   <1  0 &portb 11 0>, /* ADC0/AIN[2]             */
+			   <2  0 &porta 21 0>, /* GPIO                    */
+			   <3  0 &portb 10 0>, /* GPIO                    */
+			   <4  0 &porta 23 0>, /* TCC0/WO[6]              */
+			   <5  0 &porta 24 0>, /* TCC0/WO[7]              */
+			   <6  0 &portb  4 0>, /* GPIO                    */
+			   <7  0 &porta 25 0>, /* GPIO                    */
+			   <8  0 &porta  0 0>, /* SERCOM3/PAD[0] I2C SDA  */
+			   <9  0 &porta  1 0>, /* SERCOM3/PAD[1] I2C SCL  */
+			   <10 0 &porta 10 0>, /* SERCOM2/PAD[1] UART RX  */
+			   <11 0 &porta 13 0>, /* SERCOM2/PAD[0] UART TX  */
+			   <12 0 &porta  8 0>, /* SERCOM1/PAD[1] SPI SS   */
+			   <13 0 &porta 15 0>, /* SERCOM1/PAD[2] SPI MOSI */
+			   <14 0 &porta  9 0>, /* SERCOM1/PAD[0] SPI MISO */
+			   <15 0 &porta 14 0>; /* SERCOM1/PAD[3] SPI SCK  */
+					       /* GND                     */
+					       /* +3.3V                   */
+		/* dts-format on */
 	};
 
 	leds {
@@ -99,6 +157,10 @@
 	};
 };
 
+&porta {
+	status = "okay";
+};
+
 &portb {
 	status = "okay";
 };
@@ -121,3 +183,71 @@
 &dmac {
 	status = "okay";
 };
+
+&ptc {
+	interrupts = <13 3>;
+	def-touch-measurement-period-ms = <20>;
+	def-sensor-type = <0x82>;
+	def-sel-freq-init = "FREQ_SEL_0";
+	def-touch-det-int = <4>;
+	def-anti-tch-det-int = <5>;
+	def-anti-tch-recal-thrshld = "RECAL_100";
+	def-tch-drift-rate = <20>;
+	def-anti-tch-drift-rate = <5>;
+	def-drift-hold-time = <20>;
+	def-reburst-mode = "REBURST_UNRESOLVED";
+	sensor-drift-step = <1>;
+	def-max-on-duration = <0>;
+
+	pinctrl-0 = <&ptc_default>;
+	pinctrl-names = "default";
+
+	num-freq-steps = <3>;
+	def-median-filter-frequencies = "FREQ_SEL_0", "FREQ_SEL_1", "FREQ_SEL_2";
+	def-freq-autotune-enable = <1>;
+	freq-autotune-max-variance = <15>;
+	freq-autotune-count-in = <6>;
+
+	data-streamer-port = <&sercom1>;
+
+	/* Shared ADC configuration */
+	adc-timebase = <20>;
+	adc-pump-enable = <1>;
+	adc-prescaler = "ADC_PRSC_DIV_SEL_32";
+	cc-cal-precision = <60>;
+
+	def-num-channels = <1>;
+
+	/* node parameters */
+	node_0_params: touch_node0 {
+		x-mask = <41>;
+		x-names = "DRIVEN_SHIELD";
+		y-mask = <40>;
+		y-names = "BUTTON_0";
+		zephyr,code = <INPUT_KEY_0>;
+		csd = <10>;
+		rselect = "RSEL_VAL_0";
+		prescaler = "PRSC_DIV_SEL_30";
+		digital-gain = "GAIN_1";
+		analog-gain = "GAIN_1";
+		filter-level = "FILTER_LEVEL_16";
+	};
+
+	/* button module parameters */
+	def-num-sensors = <1>;
+
+	key_0_params: touch_key0 {
+		threshold = <20>;
+		hysteresis = "HYST_25";
+		aks-group = "NO_AKS_GROUP";
+	};
+
+	/* This node is disabled by default to allow other
+	 * input projects to compile without requiring
+	 * PTC driver. As a result, no memory will be
+	 * created for this driver.
+	 */
+	status = "disabled";
+};
+
+ext1_qt7_xpro: &ptc {};

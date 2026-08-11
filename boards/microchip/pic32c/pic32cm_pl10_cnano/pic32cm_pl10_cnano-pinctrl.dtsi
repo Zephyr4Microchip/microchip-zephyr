@@ -13,4 +13,22 @@
 				 <PB0D_SERCOM1_PAD0>;
 		};
 	};
+
+	ptc_default: ptc_default {
+		group1 {
+			pinmux = <PB8P_PTC_PAD40>,
+				 <PB9P_PTC_PAD41>;
+		};
+	};
+
+	ptc_qt7_default: ptc_qt7_default {
+		group1 {
+			pinmux = <PA4P_PTC_PAD4>,
+				 <PA5P_PTC_PAD5>,
+				 <PA17P_PTC_PAD17>,
+				 <PA18P_PTC_PAD18>,
+				 <PA19P_PTC_PAD19>,
+				 <PA29P_PTC_PAD29>;
+		};
+	};
 };
