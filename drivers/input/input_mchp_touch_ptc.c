@@ -49,10 +49,21 @@ LOG_MODULE_REGISTER(input_mchp_touch_ptc, CONFIG_INPUT_LOG_LEVEL);
 BUILD_ASSERT(NUM_FREQ_STEPS == DT_INST_PROP_LEN(0, def_median_filter_frequencies),
 	     "def-median-filter-frequencies does not match num-freq-steps length");
 
+#if (CONFIG_INPUT_MCHP_ACQUISITION_SIZE == 12)
+BUILD_ASSERT(DT_INST_PROP(0, sensor_drift_step) > 0,
+	     "Error: sensor-drift-step must be greater than 0!");
+#endif /* CONFIG_INPUT_MCHP_ACQUISITION_SIZE == 12 */
+
 struct mchp_touch_clock {
 	const struct device *clock_dev;
 	clock_control_subsys_t mclk_sys;
 	clock_control_subsys_t gclk_sys;
+#if DT_INST_CLOCKS_HAS_NAME(0, mclk_adc)
+	clock_control_subsys_t adc_mclk_sys;
+#endif /* MCLK-ADC */
+#if DT_INST_CLOCKS_HAS_NAME(0, gclk_adc)
+	clock_control_subsys_t adc_gclk_sys;
+#endif /* GCLK-ADC */
 };
 
 struct mchp_touch_config {
@@ -86,6 +97,14 @@ struct mchp_touch_data {
 	qtm_acq_node_data_t ptc_qtlib_node_stat1[DEF_NUM_CHANNELS];
 	qtm_acq_node_config_t ptc_seq_node_cfg1[DEF_NUM_CHANNELS];
 	qtm_acquisition_control_t qtlib_acq_set1;
+
+	/* The device configuration should be available
+	 * if the shared ADC has a separate prescaler.
+	 * reference: pl10, dspic33, avr-la
+	 */
+#if DT_INST_NODE_HAS_PROP(0, adc_prescaler)
+	qtm_acq_device_config_t acq_device_config;
+#endif /* device configuration */
 
 	/* Frequency Hop Auto tune Module */
 #if defined(CONFIG_INPUT_MCHP_TOUCH_EN_FREQ_AUTO_TUNE)
@@ -159,6 +178,28 @@ static int conf_touch_per_clk(const struct device *dev)
 			return ret;
 		}
 	}
+
+#if DT_INST_CLOCKS_HAS_NAME(0, mclk_adc)
+	if (config->clock_config.adc_mclk_sys != NULL) {
+		ret = clock_control_on(config->clock_config.clock_dev,
+				       config->clock_config.adc_mclk_sys);
+		if ((ret != TOUCH_SUCCESS) && (ret != -EALREADY)) {
+			LOG_ERR("ADC MClock Configuration Failure");
+			return ret;
+		}
+	}
+#endif /* MCLK-ADC */
+
+#if DT_INST_CLOCKS_HAS_NAME(0, gclk_adc)
+	if (config->clock_config.adc_gclk_sys != NULL) {
+		ret = clock_control_on(config->clock_config.clock_dev,
+				       config->clock_config.adc_gclk_sys);
+		if ((ret != TOUCH_SUCCESS) && (retval != -EALREADY)) {
+			LOG_ERR("ADC GClock Configuration Failure");
+			return ret;
+		}
+	}
+#endif /* GCLK-ADC */
 
 	return 0;
 }
@@ -472,6 +513,11 @@ static int touch_driver_init(const struct device *dev)
 	data->qtlib_acq_set1.qtm_acq_node_config = &data->ptc_seq_node_cfg1[0];
 	data->qtlib_acq_set1.qtm_acq_node_data = &data->ptc_qtlib_node_stat1[0];
 
+#if DT_INST_NODE_HAS_PROP(0, adc_prescaler)
+	data->qtlib_acq_set1.qtm_acq_device_config = &data->acq_device_config;
+#endif /* device configuration */
+
+	/* Key module initialization - always required */
 	data->qtlib_key_set1.qtm_touch_key_group_data = &data->qtlib_key_grp_data_set1;
 	data->qtlib_key_set1.qtm_touch_key_group_config = &data->qtlib_key_grp_config_set1;
 	data->qtlib_key_set1.qtm_touch_key_data = &data->qtlib_key_data_set1[0];
@@ -710,7 +756,7 @@ uint8_t qtm_get_sensor_prescaler_val(const struct device *dev, uint16_t sensor_n
 	return 0u;
 }
 
-uint8_t qtm_get_sensor_threshold_val(const struct device *dev, uint16_t sensor_node)
+uint16_t qtm_get_sensor_threshold_val(const struct device *dev, uint16_t sensor_node)
 {
 	struct mchp_touch_data *data;
 
@@ -983,6 +1029,7 @@ uint8_t qtm_get_error_code(const struct device *dev)
 		((void *)DT_INST_CLOCKS_CELL_BY_NAME(inst, clk, subsystem)),                       \
 		(NULL))
 
+/* clang-format off */
 #define TOUCH_ACQ_GEN_INIT(inst)                                                                   \
 	{.num_sensor_nodes = DEF_NUM_CHANNELS,                                                     \
 	 .acq_sensor_type = DT_INST_PROP(inst, def_sensor_type),                                   \
@@ -990,9 +1037,19 @@ uint8_t qtm_get_error_code(const struct device *dev)
 		 ((DT_INST_ENUM_IDX(inst, def_ptc_tau_target) << CAL_CHRG_TIME_POS) |              \
 		  DT_INST_ENUM_IDX(inst, def_ptc_cal_option)),                                     \
 	 .freq_option_select = DT_INST_ENUM_IDX(inst, def_sel_freq_init),                          \
-	 .ptc_interrupt_priority = DT_INST_PROP_BY_IDX(inst, interrupts, ISR_PRIORITY_IDX)}
+	 COND_CODE_1(DT_INST_NODE_HAS_PROP(inst, cc_cal_precision), \
+	  (.cc_calib_precision = DT_INST_PROP(inst, cc_cal_precision),), \
+	  (/* do nothing... */))                              \
+			  COND_CODE_1(DT_INST_NODE_HAS_PROP(inst, adc_prescaler), \
+	  (/* do nothing... */), \
+	  (.ptc_interrupt_priority = DT_INST_PROP_BY_IDX(inst, interrupts, ISR_PRIORITY_IDX),)) }
+/* clang-format on */
 
 #define FREQ_HOP_DELAY_SELECTION(node_id, prop, idx) DT_ENUM_IDX_BY_IDX(node_id, prop, idx),
+
+#define GET_SENSOR_DRIFT_STEP(inst)                                                                \
+	COND_CODE_1(DT_INST_NODE_HAS_PROP(inst, sensor_drift_step),                                \
+		(DT_INST_PROP(inst, sensor_drift_step)), (1))
 
 /* this pin control define should be at top of the touch_config structure definition */
 PINCTRL_DT_INST_DEFINE(0);
@@ -1001,7 +1058,14 @@ PINCTRL_DT_INST_DEFINE(0);
 static struct mchp_touch_config touch_config = {
 	.clock_config = {.clock_dev = DEVICE_DT_GET(DT_NODELABEL(clock)),
 			 .mclk_sys = TOUCH_CLK_SYS(0, mclk_ptc),
-			 .gclk_sys = TOUCH_CLK_SYS(0, gclk_ptc)},
+			 .gclk_sys = TOUCH_CLK_SYS(0, gclk_ptc),
+#if DT_INST_CLOCKS_HAS_NAME(0, mclk_adc)
+			 .adc_mclk_sys = TOUCH_CLK_SYS(0, mclk_adc),
+#endif /* MCLK-ADC */
+#if DT_INST_CLOCKS_HAS_NAME(0, gclk_adc)
+			 .adc_gclk_sys = TOUCH_CLK_SYS(0, gclk_adc),
+#endif  /* GCLK-ADC */
+	},
 	.button_event_code = {DT_INST_FOREACH_CHILD(0, GET_BUTTON_EVENT_CODE)},
 #if defined(CONFIG_INPUT_MCHP_TOUCH_EN_SCROLLER)
 	.scroller_event_code = {DT_INST_FOREACH_CHILD(0, GET_SCROLLER_EVENT_CODE)},
@@ -1019,6 +1083,14 @@ static struct mchp_touch_data touch_data = {
 	.prev_buttons_data = 0u,
 	.ptc_qtlib_acq_gen1 = TOUCH_ACQ_GEN_INIT(0),
 	.ptc_seq_node_cfg1 = {DT_INST_FOREACH_CHILD(0, GET_NODE_PARAM)},
+#if DT_INST_NODE_HAS_PROP(0, adc_prescaler)
+	.acq_device_config = {
+		.adc_interrupt_priority = DT_INST_PROP_BY_IDX(0, interrupts, ISR_PRIORITY_IDX),
+		.adc_timebase = DT_INST_PROP(0, adc_timebase),
+		.adc_pump_enable = DT_INST_PROP(0, adc_pump_enable),
+		.adc_prescaler = DT_INST_ENUM_IDX(0, adc_prescaler)
+	},
+#endif /* device configuration */
 #if defined(CONFIG_INPUT_MCHP_TOUCH_EN_FREQ_AUTO_TUNE)
 	.freq_hop_delay_selection = {DT_INST_FOREACH_PROP_ELEM(0, def_median_filter_frequencies,
 							       FREQ_HOP_DELAY_SELECTION)},
@@ -1030,14 +1102,20 @@ static struct mchp_touch_data touch_data = {
 		 .autotune_count_in_limit = DT_INST_PROP(0, freq_autotune_count_in)},
 	.qtm_freq_hop_autotune_data1 = {.module_status = 0u, .current_freq = 0u},
 #endif /* CONFIG_INPUT_MCHP_TOUCH_EN_FREQ_AUTO_TUNE */
-	.qtlib_key_grp_config_set1 = {DEF_NUM_SENSORS, DT_INST_PROP(0, def_touch_det_int),
-				      DT_INST_PROP(0, def_max_on_duration),
-				      DT_INST_PROP(0, def_anti_tch_det_int),
-				      DT_INST_PROP(0, def_tch_drift_rate),
-				      DT_INST_PROP(0, def_anti_tch_drift_rate),
-				      DT_INST_PROP(0, def_drift_hold_time),
-				      DT_INST_ENUM_IDX(0, def_anti_tch_recal_thrshld),
-				      DT_INST_ENUM_IDX(0, def_reburst_mode)},
+	.qtlib_key_grp_config_set1 = {
+		 DEF_NUM_SENSORS,
+		 DT_INST_PROP(0, def_touch_det_int),
+		 DT_INST_PROP(0, def_max_on_duration),
+		 DT_INST_PROP(0, def_anti_tch_det_int),
+		 DT_INST_PROP(0, def_tch_drift_rate),
+		 DT_INST_PROP(0, def_anti_tch_drift_rate),
+		 DT_INST_PROP(0, def_drift_hold_time),
+		 DT_INST_ENUM_IDX(0, def_anti_tch_recal_thrshld),
+		 DT_INST_ENUM_IDX(0, def_reburst_mode),
+#if (CONFIG_INPUT_MCHP_ACQUISITION_SIZE == 12)
+		 GET_SENSOR_DRIFT_STEP(0)
+#endif /* CONFIG_INPUT_MCHP_ACQUISITION_SIZE == 12 */
+	},
 	.qtlib_key_configs_set1 = {DT_INST_FOREACH_CHILD(0, GET_KEY_PARAM)},
 #if defined(CONFIG_INPUT_MCHP_TOUCH_EN_SCROLLER)
 	.qtm_scroller_config1 = {DT_INST_FOREACH_CHILD(0, GET_SCROLLER_PARAM)}

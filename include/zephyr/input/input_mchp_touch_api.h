@@ -213,7 +213,7 @@ uint8_t qtm_get_sensor_prescaler_val(const struct device *dev, uint16_t sensor_n
  *
  * @return The Threshold value of the specified sensor node.
  */
-uint8_t qtm_get_sensor_threshold_val(const struct device *dev, uint16_t sensor_node);
+uint16_t qtm_get_sensor_threshold_val(const struct device *dev, uint16_t sensor_node);
 
 /**
  * @brief Update the Threshold value of a sensor node.

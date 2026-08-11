@@ -20,6 +20,12 @@ config INPUT_MCHP_TOUCH_THREAD_STACK_SIZE
 	  Specifies the stack size, in bytes, for the capacitive touch
 	  driver thread. The minimum supported value is 310 bytes.
 
+config INPUT_MCHP_TOUCH_QTLIB_TIMEBASE
+	int "QTLIB Timebase"
+	default 200
+	help
+	  Specifies the base time of the key module
+
 config INPUT_MCHP_TOUCH_THREAD_PRIORITY
 	int "Touch driver thread priority"
 	default 7
@@ -61,11 +67,17 @@ config INPUT_MCHP_SCROLLER_TOUCH_EVENT
 
 config INPUT_MCHP_TOUCH_DATASTREAMER
 	bool "Touch Datastreamer [UNI-DIRECTION]"
-	default n
 	depends on SERIAL
 	help
 	  Provides touch data for visualization in MPLAB Data Visualizer.
 	  Supports unidirectional data streaming only. Tuning is not supported.
+
+config INPUT_MCHP_ACQUISITION_SIZE
+	int "Touch Acquisition size"
+	default $(dt_node_int_prop_int,$(dt_nodelabel_path,ptc),acquisition-size)
+	help
+	  This property helps select the appropriate library for the
+	  touch peripheral based on the acquisition size in bits.
 
 endif # INPUT_MCHP_TOUCH
 

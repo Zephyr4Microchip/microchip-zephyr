@@ -117,8 +117,9 @@ void datastreamer_output(const struct device *dev)
 		}
 
 		/* Threshold */
-		u8temp_output = qtm_get_sensor_threshold_val(dev, count_bytes_out);
-		datastreamer_transmit(u8temp_output);
+		u16temp_output = qtm_get_sensor_threshold_val(dev, count_bytes_out);
+		datastreamer_transmit((uint8_t)u16temp_output);
+		datastreamer_transmit((uint8_t)(u16temp_output >> 8u));
 	}
 
 #if defined(CONFIG_INPUT_MCHP_TOUCH_EN_SCROLLER)
