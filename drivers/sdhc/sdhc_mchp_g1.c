@@ -23,8 +23,8 @@ LOG_MODULE_REGISTER(sdhc_mchp_g1, CONFIG_SDHC_LOG_LEVEL);
 #define SDHC_RESET_TIMEOUT_US         1000
 #define SDHC_CLOCK_STABLE_TIMEOUT_US  1000
 #define SDHC_CMD_IDLE_TIMEOUT_US      1000
-#define SDHC_XFER_DONE_TIMEOUT_US     100000
 #define SDHC_CMD_DEFAULT_TIMEOUT_MS   200
+#define SDHC_DATA_DEFAULT_TIMEOUT_MS  10000
 #define SDHC_DATA_TIMEOUT_COUNTER_VAL 0xEU
 
 /* Convert SDHC max_blk_len bitfield value to actual byte length.
@@ -109,6 +109,7 @@ struct sdhc_object {
 	bool cmdc_received;
 	bool trfc_received;
 	uint16_t error_status;
+	uint32_t response_type;
 };
 
 struct sdhc_mchp_data {
@@ -119,6 +120,7 @@ struct sdhc_mchp_data {
 	int sdhc_response[4];
 	volatile struct sdhc_object sdhc_obj;
 	struct sdhc_adma_descr *dma_desc_table;
+	bool card_supports_cmd23; /* Card supports CMD23 (from SCR) */
 };
 
 struct mchp_sdhc_clock {
@@ -260,8 +262,13 @@ static void sdhc_set_transfermode(const struct device *dev, int opcode,
 	uint16_t transfer_mode = 0U;
 	uint16_t auto_cmd_mode = 0U;
 
-	/* Multi block R/W: Determine auto command mode: CMD23 takes precedence over CMD12 */
-	if (cfg->auto_cmd23) {
+	/* Multi block R/W: Determine auto command mode
+	 * Use CMD23 only if both host supports it (DTS) AND card supports it (SCR).
+	 * Fall back to CMD12 otherwise - all cards support CMD12.
+	 */
+	struct sdhc_mchp_data *const dev_data = dev->data;
+
+	if (cfg->auto_cmd23 && dev_data->card_supports_cmd23) {
 		auto_cmd_mode = SDHC_TMR_ACMDEN_CMD23;
 	} else if (cfg->auto_cmd12) {
 		auto_cmd_mode = SDHC_TMR_ACMDEN_CMD12;
@@ -485,6 +492,7 @@ static void sdhc_send_command(const struct device *dev, uint8_t op_code, int arg
 	dev_data->sdhc_obj.error_status = 0U;
 	dev_data->sdhc_obj.cmdc_received = false;
 	dev_data->sdhc_obj.trfc_received = false;
+	dev_data->sdhc_obj.response_type = resp_type;
 
 	normal_int_sig_enable = (SDHC_NISIER_CINS_Msk | SDHC_NISIER_CREM_Msk);
 
@@ -655,39 +663,6 @@ static int sdhc_init_props(const struct device *dev)
 	return 0;
 }
 
-static uint8_t sdhc_resp_type(struct sdhc_command *cmd)
-{
-	switch (cmd->opcode) {
-
-	case SD_GO_IDLE_STATE:
-		return SD_RSP_TYPE_NONE;
-
-	case SD_SEND_IF_COND:
-		return SD_RSP_TYPE_R7;
-
-	case SD_APP_CMD:
-		return SD_RSP_TYPE_R1;
-
-	case SD_APP_SEND_OP_COND:
-		return SD_RSP_TYPE_R3;
-
-	case SD_ALL_SEND_CID:
-	case SD_SEND_CID:
-	case SD_SEND_CSD:
-		return SD_RSP_TYPE_R2;
-
-	case SD_SEND_RELATIVE_ADDR:
-		return SD_RSP_TYPE_R6;
-
-	case SD_SELECT_CARD:
-	case SD_STOP_TRANSMISSION:
-		return SD_RSP_TYPE_R1b;
-
-	default:
-		return SD_RSP_TYPE_R1;
-	}
-}
-
 static void sdhc_mchp_isr(const struct device *dev)
 {
 	struct sdhc_mchp_data *const dev_data = dev->data;
@@ -726,7 +701,7 @@ static void sdhc_mchp_isr(const struct device *dev)
 		 * This handles the case where TRFC fires before CMDC (in devices like PIC32CK
 		 * SG/GC). Non-R1b: complete on either CMDC or TRFC.
 		 */
-		if (sdhc_resp_type(dev_data->cmd) == SD_RSP_TYPE_R1b) {
+		if (dev_data->sdhc_obj.response_type == SD_RSP_TYPE_R1b) {
 			cmd_done = (dev_data->sdhc_obj.cmdc_received &&
 				    dev_data->sdhc_obj.trfc_received);
 		} else {
@@ -772,7 +747,8 @@ static void sdhc_mchp_isr(const struct device *dev)
 	sdhc_regs->SDHC_NISTR = nistr;
 	sdhc_regs->SDHC_EISTR = eistr;
 
-	if (xfer_status != 0U) {
+	if ((xfer_status != 0U) && (dev_data->sdhc_obj.is_data_in_progress == false) &&
+	    (dev_data->sdhc_obj.is_cmd_in_progress == false)) {
 		k_sem_give(&dev_data->transfer_done);
 	}
 }
@@ -785,6 +761,9 @@ static int sdhc_mchp_request(const struct device *dev, struct sdhc_command *cmd,
 	struct sdhc_data_transfer_flags transfer_flags = {0};
 	uint8_t op = (uint8_t)cmd->opcode;
 	k_timeout_t cmd_timeout;
+	k_timeout_t data_timeout;
+	k_timeout_t xfer_timeout;
+	uint8_t resp_type;
 
 	__ASSERT_NO_MSG(cmd != NULL);
 	dev_data->cmd = cmd;
@@ -796,17 +775,23 @@ static int sdhc_mchp_request(const struct device *dev, struct sdhc_command *cmd,
 	} else {
 		cmd_timeout = K_MSEC(cmd->timeout_ms);
 	}
-
-	if (k_mutex_lock(&dev_data->bus_mutex, cmd_timeout)) {
-		return -EBUSY;
-	}
+	xfer_timeout = cmd_timeout;
 
 	if (data != NULL) {
+		if (data->timeout_ms == SDHC_TIMEOUT_FOREVER) {
+			data_timeout = K_FOREVER;
+		} else if (data->timeout_ms == 0) {
+			data_timeout = K_MSEC(SDHC_DATA_DEFAULT_TIMEOUT_MS);
+		} else {
+			data_timeout = K_MSEC(data->timeout_ms);
+		}
+		xfer_timeout = K_TIMEOUT_SUM(cmd_timeout, data_timeout);
+
 		sdhc_set_blocksize(dev, (uint16_t)data->block_size);
 		sdhc_set_blockcount(dev, (uint16_t)data->blocks);
+
 		rc = sdhc_dma_setup(dev, (uint8_t *)data->data, data->blocks * data->block_size);
 		if (rc != 0) {
-			k_mutex_unlock(&dev_data->bus_mutex);
 			return rc;
 		}
 
@@ -818,6 +803,10 @@ static int sdhc_mchp_request(const struct device *dev, struct sdhc_command *cmd,
 		}
 	}
 
+	if (k_mutex_lock(&dev_data->bus_mutex, xfer_timeout) != 0) {
+		return -EBUSY;
+	}
+
 	sdhc_reset_error(dev, SDHC_RESET_CMD | SDHC_RESET_DAT);
 
 	/* Drain stale completions before issuing the command */
@@ -825,18 +814,17 @@ static int sdhc_mchp_request(const struct device *dev, struct sdhc_command *cmd,
 		k_sem_take(&dev_data->transfer_done, K_NO_WAIT);
 	}
 
-	sdhc_send_command(dev, op, cmd->arg, sdhc_resp_type(cmd), transfer_flags);
+	resp_type = (uint8_t)(cmd->response_type & SDHC_NATIVE_RESPONSE_MASK);
+	sdhc_send_command(dev, op, cmd->arg, resp_type, transfer_flags);
 
-	rc = sdhc_wait_completion(dev_data, cmd_timeout);
+	rc = sdhc_wait_completion(dev_data, xfer_timeout);
 	if (rc != 0) {
+		LOG_ERR("Timeout: Transfer completion flags did not clear");
 		k_mutex_unlock(&dev_data->bus_mutex);
-		return rc;
+		return -ETIMEDOUT;
 	}
-
-	if (!WAIT_FOR(((dev_data->sdhc_obj.is_cmd_in_progress == false) &&
-		       (dev_data->sdhc_obj.is_data_in_progress == false)),
-		      SDHC_XFER_DONE_TIMEOUT_US, k_busy_wait(1))) {
-		LOG_ERR("Transfer completion flags did not clear");
+	if (dev_data->sdhc_obj.is_cmd_in_progress || dev_data->sdhc_obj.is_data_in_progress) {
+		LOG_ERR("Timeout: Command/Data completion flag did not clear");
 		k_mutex_unlock(&dev_data->bus_mutex);
 		return -ETIMEDOUT;
 	}
@@ -864,6 +852,17 @@ static int sdhc_mchp_request(const struct device *dev, struct sdhc_command *cmd,
 		cmd->response[1] = dev_data->sdhc_response[1];
 		cmd->response[2] = dev_data->sdhc_response[2];
 		cmd->response[3] = dev_data->sdhc_response[3];
+	}
+
+	/* Parse SCR to determine card's CMD23 support */
+	if (cmd->opcode == SD_APP_SEND_SCR && data != NULL && data->data != NULL) {
+		uint32_t *scr_data = (uint32_t *)data->data;
+		uint32_t scr_word0 = sys_be32_to_cpu(scr_data[0]);
+
+		/* SCR cmd_support field is bits 0-1, bit 1 = CMD23 support */
+		dev_data->card_supports_cmd23 = (bool)((scr_word0 & 0x2U) != 0U);
+		LOG_DBG("SCR cmd_support: card %s CMD23",
+			dev_data->card_supports_cmd23 ? "supports" : "does not support");
 	}
 
 	k_mutex_unlock(&dev_data->bus_mutex);
@@ -940,6 +939,10 @@ static int sdhc_mchp_reset(const struct device *dev)
 	dev_data->sdhc_obj.error_status = 0U;
 	dev_data->sdhc_obj.is_cmd_in_progress = false;
 	dev_data->sdhc_obj.is_data_in_progress = false;
+
+	/* Reset cached card capabilities */
+	dev_data->card_supports_cmd23 = false;
+
 	sdhc_init_module(dev);
 
 	/*
@@ -1040,6 +1043,7 @@ static DEVICE_API(sdhc, sdhc_mchp_api) = {
 	sdhc_mchp_dma_desc_##n[(SDHC_ADMA2_DESC_TABLE_SIZE_CACHE_ALIGN / 8U)];                     \
 	static struct sdhc_mchp_data sdhc_mchp_data_##n = {                                        \
 		.dma_desc_table = sdhc_mchp_dma_desc_##n,                                          \
+		.card_supports_cmd23 = false,                                                      \
 		.sdhc_obj =                                                                        \
 			{                                                                          \
 				.error_status = 0U,                                                \
