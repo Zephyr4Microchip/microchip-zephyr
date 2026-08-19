@@ -14,7 +14,7 @@ if WDT_MCHP_G1
 config WDT_MCHP_G1_RUN_IN_STANDBY
 	bool
 	default y
-	depends on SOC_FAMILY_MICROCHIP_PIC32CK_SG_GC
+	depends on SOC_FAMILY_MICROCHIP_PIC32CK_SG_GC || SOC_FAMILY_MICROCHIP_PIC32CZ_CA
 	help
 	  Enable watchdog run in standby mode support
 
