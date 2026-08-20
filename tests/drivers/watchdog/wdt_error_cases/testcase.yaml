@@ -27,6 +27,7 @@ tests:
       - pic32ck_gc01_cult
       - pic32cx_sg61_cult
       - pic32cz_ca80_cult
+      - pic32cz_ca90_cult
     integration_platforms:
       - nrf54l15dk/nrf54l15/cpuapp
       - ophelia4ev/nrf54l15/cpuapp
