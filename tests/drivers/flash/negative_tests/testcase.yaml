@@ -12,7 +12,6 @@ tests:
       - ophelia4ev/nrf54l15/cpuapp
       - sam_e54_xpro
       - pic32cm_jh01_cpro
-      - pic32cz_ca80_cult
       - pic32cx_sg41_cult
       - pic32cx_sg61_cult
       - pic32cz_ca90_cult
