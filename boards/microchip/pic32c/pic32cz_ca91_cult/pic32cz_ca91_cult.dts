@@ -21,6 +21,7 @@
 		zephyr,console = &sercom1;
 		zephyr,shell-uart = &sercom1;
 		zephyr,code-partition = &slot0_partition;
+		zephyr,entropy = &trng;
 	};
 
 	aliases {
