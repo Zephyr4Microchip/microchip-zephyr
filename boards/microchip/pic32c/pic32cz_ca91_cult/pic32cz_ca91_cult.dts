@@ -130,6 +130,23 @@
 				dpll-output-en = <1>;
 			};
 		};
+
+		dpll1: dpll1 {
+			subsystem = <CLOCK_MCHP_DPLL_ID_DPLL1>;
+			dpll-bandwidth-sel = "4mhz-10mhz";
+			dpll-ref-division-factor = <3>;
+			dpll-feedback-divider-factor = <250>;
+			dpll-src = "xosc";
+			dpll-en = <1>;
+
+			dpll1out0: dpll1out0 {
+				subsystem = <CLOCK_MCHP_DPLL1_ID_OUT0>;
+				dpll-output-division-factor = <8>;
+				dpll-output-en = <1>;
+				dpll-fractional-divider-int = <0>;
+				dpll-fractional-divider-rem = <0>;
+			};
+		};
 	};
 
 	xosc32k: xosc32k {
@@ -157,6 +174,14 @@
 			gclkgen-src = "pll0-clkout0";
 			gclkgen-en = <1>;
 		};
+
+		gclkgen2 {
+			subsystem = <CLOCK_MCHP_GCLKGEN_ID_GEN2>;
+			gclkgen-div-factor = <1>;
+			gclkgen-run-in-standby-en = <1>;
+			gclkgen-src = "pll1-frc-clkout0";
+			gclkgen-en = <1>;
+		};
 	};
 
 	gclkperiph: gclkperiph {
@@ -178,6 +203,18 @@
 		sercom2 {
 			subsystem = <CLOCK_MCHP_GCLKPERIPH_ID_SERCOM2_CORE>;
 			gclkperiph-src = "gclk0";
+			gclkperiph-en = <1>;
+		};
+
+		gmac_tx {
+			subsystem = <CLOCK_MCHP_GCLKPERIPH_ID_GMAC_TX>;
+			gclkperiph-src = "gclk2";
+			gclkperiph-en = <1>;
+		};
+
+		gmac_tsu {
+			subsystem = <CLOCK_MCHP_GCLKPERIPH_ID_GMAC_TSU>;
+			gclkperiph-src = "gclk2";
 			gclkperiph-en = <1>;
 		};
 	};
@@ -212,6 +249,16 @@
 
 		husb0 {
 			subsystem = <CLOCK_MCHP_MCLKPERIPH_ID_HUSB0>;
+			mclk-en = <1>;
+		};
+
+		gmac_ahb {
+			subsystem = <CLOCK_MCHP_MCLKPERIPH_ID_GMAC_AHB>;
+			mclk-en = <1>;
+		};
+
+		gmac_apb {
+			subsystem = <CLOCK_MCHP_MCLKPERIPH_ID_GMAC_APB>;
 			mclk-en = <1>;
 		};
 	};
@@ -262,6 +309,54 @@ i2c0: &sercom9 {
 		pagesize = <16>;
 		address-width = <8>;
 		timeout = <5>;
+	};
+
+	eeprom_mac: eeprom@5e {
+		compatible = "atmel,at24", "atmel,24mac402";
+		reg = <0x5e>;
+		size = <256>;
+		pagesize = <16>;
+		address-width = <8>;
+		timeout = <5>;
+
+		nvmem-layout {
+			compatible = "fixed-layout";
+			#address-cells = <1>;
+			#size-cells = <1>;
+
+			mac_address: mac-address@9a {
+				reg = <0x9a 6>;
+				#nvmem-cell-cells = <0>;
+			};
+		};
+	};
+};
+
+&gmac {
+	compatible = "microchip,gmac-g1-eth";
+	pinctrl-0 = <&gmac_gmii>;
+	pinctrl-names = "default";
+
+	nvmem-cells = <&mac_address>;
+	nvmem-cell-names = "mac-address";
+	phy-connection-type = "gmii";
+	phy-handle = <&phy>;
+	status = "okay";
+};
+
+&mdio {
+	compatible = "microchip,gmac-g1-mdio";
+	pinctrl-0 = <&mdio_default>;
+	pinctrl-names = "default";
+	status = "okay";
+
+	phy: ethernet-phy@3 {
+		compatible = "ethernet-phy";
+		status = "okay";
+		reg = <3>;
+		reset-gpios = <&portb 23 GPIO_ACTIVE_LOW>;
+		reset-assert-duration-us = <10000>;
+		reset-deassertion-timeout-ms = <1>;
 	};
 };
 

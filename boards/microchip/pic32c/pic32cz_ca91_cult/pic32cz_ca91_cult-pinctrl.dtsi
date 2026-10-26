@@ -20,4 +20,49 @@
 				 <PD29D_SERCOM9_PAD1>;  /* SCL */
 		};
 	};
+
+	mdio_default: mdio_default {
+		group1 {
+			pinmux = <PA3K_ETH_GMDC>,
+				 <PA4K_ETH_GMDIO>;
+		};
+	};
+
+	gmac_gmii: gmac_gmii {
+		group1 {
+			pinmux = <PA2K_ETH_GTXEN>,
+				 <PD2K_ETH_GTXER>,
+				 <PD5L_ETH_GTXCK>,
+				 <PA21K_ETH_TXCK>,
+				 <PA1K_ETH_GTX0>,
+				 <PA0K_ETH_GTX1>,
+				 <PD4K_ETH_GTX2>,
+				 <PD3K_ETH_GTX3>,
+				 <PD17K_ETH_GTX4>,
+				 <PD16K_ETH_GTX5>,
+				 <PD15K_ETH_GTX6>,
+				 <PD14K_ETH_GTX7>,
+				 <PA5K_ETH_GRXDV>,
+				 <PA6K_ETH_GRXER>,
+				 <PD20K_ETH_GRX4>,
+				 <PD21K_ETH_GRX5>,
+				 <PD19K_ETH_GRX6>,
+				 <PD9K_ETH_GCRS>,
+				 <PD18K_ETH_GRX7>,
+				 <PD8K_ETH_GCOL>;
+		};
+
+		group2 {
+			pinmux = <PD11K_ETH_GRX0>;
+			bias-pull-up;
+		};
+
+		group3 {
+			pinmux = <PD10K_ETH_GRX1>,
+				 <PD7K_ETH_GRX2>,
+				 <PD6K_ETH_GRX3>,
+				 <PD12L_ETH_GREFCK>;
+			bias-pull-down;
+		};
+	};
 };

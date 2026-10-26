@@ -17,6 +17,7 @@ supported:
   - gpio
   - hwinfo
   - i2c
+  - netif:eth
   - pinctrl
   - uart
   - usbd
