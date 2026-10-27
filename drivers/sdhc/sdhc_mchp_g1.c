@@ -14,6 +14,8 @@
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/sys/byteorder.h>
+#include <zephyr/kernel.h>
+#include <zephyr/cache.h>
 #include <string.h>
 
 LOG_MODULE_REGISTER(sdhc_mchp_g1, CONFIG_SDHC_LOG_LEVEL);
@@ -26,6 +28,7 @@ LOG_MODULE_REGISTER(sdhc_mchp_g1, CONFIG_SDHC_LOG_LEVEL);
 #define SDHC_CMD_DEFAULT_TIMEOUT_MS   200
 #define SDHC_DATA_DEFAULT_TIMEOUT_MS  10000
 #define SDHC_DATA_TIMEOUT_COUNTER_VAL 0xEU
+#define SDHC_GCLK_READY_TIMEOUT_MS    1000 /* 1 sec */
 
 /* Convert SDHC max_blk_len bitfield value to actual byte length.
  * returns Maximum block length in bytes, or 0 if reserved.
@@ -43,15 +46,33 @@ LOG_MODULE_REGISTER(sdhc_mchp_g1, CONFIG_SDHC_LOG_LEVEL);
 #define SDHC_ADMA_DESC_TABLE_ATTR_END       (1UL << 1U)
 #define SDHC_ADMA_DESC_TABLE_ATTR_INTR      (1U << 2U)
 
-#define SDHC_ADMA2_DESC_MAX_BYTES  65536U
-#define CACHE_LINE_SIZE            (16U)
-#define SDHC_DMASEL_ADMA2          2U
-#define SDHC_ADMA2_NUM_DESCR_LINES (8U)
-#define SDHC_ADMA2_DESC_TABLE_SIZE (8U * SDHC_ADMA2_NUM_DESCR_LINES)
-#define SDHC_ADMA2_DESC_TABLE_SIZE_CACHE_ALIGN                                                     \
-	(SDHC_ADMA2_DESC_TABLE_SIZE +                                                              \
-	 ((SDHC_ADMA2_DESC_TABLE_SIZE % CACHE_LINE_SIZE)                                           \
-		  ? (CACHE_LINE_SIZE - (SDHC_ADMA2_DESC_TABLE_SIZE % CACHE_LINE_SIZE))             \
+/* Max size per descriptor: keep it perfectly divisible by both 4-byte sector word boundaries
+ * and your active CONFIG_SDHC_BUFFER_ALIGNMENT(ie, cache line size) alignment requirements.
+ */
+#define SDHC_ADMA2_DESC_MAX_BYTES ((64 * 1024) - CONFIG_SDHC_BUFFER_ALIGNMENT)
+#define SDHC_DMASEL_ADMA2         2U
+
+/* Each standard row in the sdhc_adma_descr structure takes exactly 8 bytes */
+#define SDHC_ADMA2_DESC_LINE_SIZE 8U
+#define SDHC_MCHP_DESC_TABLE_SIZE(n)                                                               \
+	(SDHC_ADMA2_DESC_LINE_SIZE * CONFIG_SDHC_MCHP_G1_ADMA_DESC_COUNT)
+
+#if defined(CONFIG_SDHC_BUFFER_ALIGNMENT)
+/* Bind directly to Zephyr's block layer device alignment configuration */
+#define SDHC_MCHP_AGNOSTIC_ALIGN_SIZE CONFIG_SDHC_BUFFER_ALIGNMENT
+#elif defined(CONFIG_DCACHE_LINE_SIZE) && (CONFIG_DCACHE_LINE_SIZE > 0)
+/* Fallback directly to the compile-time physical hardware line size (32) */
+#define SDHC_MCHP_AGNOSTIC_ALIGN_SIZE CONFIG_DCACHE_LINE_SIZE
+#else
+/* Safe fallback baseline limit for hardware ADMA2 parsing word boundaries */
+#define SDHC_MCHP_AGNOSTIC_ALIGN_SIZE 4U
+#endif
+
+#define SDHC_MCHP_DESC_TABLE_SIZE_CACHE_ALIGN(n)                                                   \
+	(SDHC_MCHP_DESC_TABLE_SIZE(n) +                                                            \
+	 ((SDHC_MCHP_DESC_TABLE_SIZE(n) % SDHC_MCHP_AGNOSTIC_ALIGN_SIZE)                           \
+		  ? (SDHC_MCHP_AGNOSTIC_ALIGN_SIZE -                                               \
+		     (SDHC_MCHP_DESC_TABLE_SIZE(n) % SDHC_MCHP_AGNOSTIC_ALIGN_SIZE))               \
 		  : 0U))
 
 enum sdhc_speed_mode {
@@ -121,6 +142,20 @@ struct sdhc_mchp_data {
 	volatile struct sdhc_object sdhc_obj;
 	struct sdhc_adma_descr *dma_desc_table;
 	bool card_supports_cmd23; /* Card supports CMD23 (from SCR) */
+	/* Handle un-aligned cmd/+data transfers:
+	 * Static bounce buffer for sub-cacheline control structures (CSD, CID, SCR, etc.)
+	 */
+	uint8_t dma_ctrl_aligned_buffer[SDHC_MCHP_AGNOSTIC_ALIGN_SIZE]
+		__aligned(SDHC_MCHP_AGNOSTIC_ALIGN_SIZE);
+	/* Handle un-aligned cmd/+data transfers:
+	 * Dynamic bounce buffer pointer for unaligned filesystem/disk data payloads
+	 */
+	uint8_t *dma_data_aligned_buffer;
+	/* Tracking metrics to safely bridge dma_setup and dma_teardown execution blocks */
+	uint8_t *dma_original_data_ptr;
+	size_t dma_cache_aligned_size;
+	bool dma_used_static_aligned_buffer;
+	bool dma_used_dynamic_aligned_buffer;
 };
 
 struct mchp_sdhc_clock {
@@ -314,13 +349,14 @@ static void sdhc_set_transfermode(const struct device *dev, int opcode,
 	sdhc_regs->SDHC_TMR = transfer_mode;
 }
 
-static int sdhc_dma_setup(const struct device *dev, uint8_t *buffer, int num_bytes)
+static int sdhc_dma_adma2_configure(const struct device *dev, uint8_t *buffer, int num_bytes)
 {
 	struct sdhc_mchp_data *const dev_data = dev->data;
 	sdhc_registers_t *sdhc_regs = SDHC_REG(dev);
 	uint32_t remaining;
 	uint32_t addr;
 	uint32_t i = 0U;
+	size_t desc_flush_size;
 
 	if ((buffer == NULL) || (num_bytes <= 0)) {
 		LOG_ERR("Invalid buffer pointer or transfer size");
@@ -332,9 +368,12 @@ static int sdhc_dma_setup(const struct device *dev, uint8_t *buffer, int num_byt
 		return -ENOTSUP;
 	}
 
-	if ((uint32_t)num_bytes > (SDHC_ADMA2_NUM_DESCR_LINES * SDHC_ADMA2_DESC_MAX_BYTES)) {
+	/* Guard: Verify that the overall transfer size doesn't overflow table bounds */
+	if ((uint32_t)num_bytes >
+	    (CONFIG_SDHC_MCHP_G1_ADMA_DESC_COUNT * SDHC_ADMA2_DESC_MAX_BYTES)) {
 		LOG_ERR("Transfer size %d exceeds chained ADMA2 capacity %u", num_bytes,
-			(unsigned int)(SDHC_ADMA2_NUM_DESCR_LINES * SDHC_ADMA2_DESC_MAX_BYTES));
+			(unsigned int)(CONFIG_SDHC_MCHP_G1_ADMA_DESC_COUNT *
+				       SDHC_ADMA2_DESC_MAX_BYTES));
 		return -ENOMEM;
 	}
 
@@ -348,7 +387,6 @@ static int sdhc_dma_setup(const struct device *dev, uint8_t *buffer, int num_byt
 			SDHC_ADMA_DESC_TABLE_ATTR_XFER_DATA | SDHC_ADMA_DESC_TABLE_ATTR_VALID;
 
 		dev_data->dma_desc_table[i].address = addr;
-		/* ADMA2 encodes a length of 65536 as the value 0; the cast handles that. */
 		dev_data->dma_desc_table[i].length = (uint16_t)chunk;
 
 		remaining -= chunk;
@@ -361,12 +399,159 @@ static int sdhc_dma_setup(const struct device *dev, uint8_t *buffer, int num_byt
 		i++;
 	}
 
-#if defined(CONFIG_SOC_FAMILY_MICROCHIP_PIC32CK_SG_GC)
+	desc_flush_size = i * sizeof(dev_data->dma_desc_table[0]);
+	desc_flush_size = ROUND_UP(desc_flush_size, SDHC_MCHP_AGNOSTIC_ALIGN_SIZE);
+#if defined(CONFIG_CACHE_MANAGEMENT) && defined(CONFIG_DCACHE)
+	sys_cache_data_flush_range(dev_data->dma_desc_table, desc_flush_size);
+#endif
+
+#if defined(CONFIG_SOC_FAMILY_MICROCHIP_PIC32CK_SG_GC) ||                                          \
+	defined(CONFIG_SOC_FAMILY_MICROCHIP_PIC32CZ_CA)
 	sdhc_regs->SDHC_ASAR = (uint32_t)(uintptr_t)&dev_data->dma_desc_table[0];
 #else
 	sdhc_regs->SDHC_ASAR[0] = (uint32_t)(uintptr_t)&dev_data->dma_desc_table[0];
 #endif
 	return 0;
+}
+
+static void sdhc_dma_teardown(const struct device *dev, struct sdhc_command *cmd,
+			      struct sdhc_data *data)
+{
+	struct sdhc_mchp_data *const dev_data = dev->data;
+
+	if (data == NULL || dev_data->dma_original_data_ptr == NULL) {
+		LOG_DBG("No DMA teardown required: data or original buffer pointer is NULL");
+		return;
+	}
+
+	bool is_tx =
+		(cmd->opcode == SD_WRITE_SINGLE_BLOCK || cmd->opcode == SD_WRITE_MULTIPLE_BLOCK ||
+		 (cmd->opcode == SDIO_RW_EXTENDED &&
+		  ((cmd->arg & BIT(SDIO_CMD_ARG_RW_SHIFT)) != 0U)));
+
+	/*
+	 * Rx Path : Invalidate cache lines immediately after hardware dma completion
+	 * to discard speculative CPU pre-fetches and force reading pristine data from SRAM.
+	 * This prevents reading the old, stale data currently sitting in its cache lines instead
+	 * of the new data the DMA engine just wrote.
+	 */
+	if (!is_tx) {
+#if defined(CONFIG_CACHE_MANAGEMENT) && defined(CONFIG_DCACHE)
+		sys_cache_data_invd_range((void *)data->data, dev_data->dma_cache_aligned_size);
+#endif
+
+		/* Relocate clean data payloads from safe bounce regions back to application memory
+		 * space
+		 */
+		if (dev_data->dma_used_static_aligned_buffer ||
+		    dev_data->dma_used_dynamic_aligned_buffer) {
+			size_t total_bytes = (size_t)data->blocks * (size_t)data->block_size;
+			(void)memcpy(dev_data->dma_original_data_ptr, data->data, total_bytes);
+#if defined(CONFIG_CACHE_MANAGEMENT) && defined(CONFIG_DCACHE)
+			/* Invalidate the final user destination memory to guarantee cache coherence
+			 */
+			sys_cache_data_invd_range((void *)dev_data->dma_original_data_ptr,
+						  total_bytes);
+#endif
+		}
+	}
+	/* point the subsystem framework back to the host memory location */
+	data->data = dev_data->dma_original_data_ptr;
+
+	/* Release the dynamically allocated heap block if a large fallback allocation occurred */
+	if (dev_data->dma_used_dynamic_aligned_buffer &&
+	    dev_data->dma_data_aligned_buffer != NULL) {
+		k_free(dev_data->dma_data_aligned_buffer);
+		dev_data->dma_data_aligned_buffer = NULL;
+	}
+
+	/* Clear tracking metrics */
+	dev_data->dma_original_data_ptr = NULL;
+	dev_data->dma_cache_aligned_size = 0;
+	dev_data->dma_used_static_aligned_buffer = false;
+	dev_data->dma_used_dynamic_aligned_buffer = false;
+}
+
+static int sdhc_dma_setup(const struct device *dev, struct sdhc_command *cmd,
+			  struct sdhc_data *data)
+{
+	struct sdhc_mchp_data *const dev_data = dev->data;
+	size_t align_mask = SDHC_MCHP_AGNOSTIC_ALIGN_SIZE - 1U;
+	size_t total_bytes = (size_t)data->blocks * (size_t)data->block_size;
+	int rc = 0;
+	bool is_tx =
+		(cmd->opcode == SD_WRITE_SINGLE_BLOCK || cmd->opcode == SD_WRITE_MULTIPLE_BLOCK ||
+		 (cmd->opcode == SDIO_RW_EXTENDED &&
+		  ((cmd->arg & BIT(SDIO_CMD_ARG_RW_SHIFT)) != 0U)));
+
+	/* Initialize properties tracked across the instance context */
+	dev_data->dma_original_data_ptr = (uint8_t *)data->data;
+	dev_data->dma_used_static_aligned_buffer = false;
+	dev_data->dma_used_dynamic_aligned_buffer = false;
+	dev_data->dma_cache_aligned_size = 0;
+
+	/* Check whether the data buffer and total transfer size are cache line aligned */
+	if (((uintptr_t)data->data & align_mask) != 0U || (total_bytes & align_mask) != 0U) {
+
+		if (total_bytes < SDHC_MCHP_AGNOSTIC_ALIGN_SIZE) {
+			dev_data->dma_used_static_aligned_buffer = true;
+			dev_data->dma_cache_aligned_size = SDHC_MCHP_AGNOSTIC_ALIGN_SIZE;
+
+			if (is_tx) {
+				(void)memcpy(dev_data->dma_ctrl_aligned_buffer,
+					     dev_data->dma_original_data_ptr, total_bytes);
+				(void)memset(&dev_data->dma_ctrl_aligned_buffer[total_bytes], 0,
+					     SDHC_MCHP_AGNOSTIC_ALIGN_SIZE - total_bytes);
+			}
+			data->data = dev_data->dma_ctrl_aligned_buffer;
+		} else {
+			dev_data->dma_used_dynamic_aligned_buffer = true;
+			dev_data->dma_cache_aligned_size =
+				ROUND_UP(total_bytes, SDHC_MCHP_AGNOSTIC_ALIGN_SIZE);
+
+			dev_data->dma_data_aligned_buffer = k_aligned_alloc(
+				SDHC_MCHP_AGNOSTIC_ALIGN_SIZE, dev_data->dma_cache_aligned_size);
+			if (dev_data->dma_data_aligned_buffer == NULL) {
+				LOG_ERR("SDHC DMA: Failed to allocate buffer to handle unaligned "
+					"data.Try increasing CONFIG_HEAP_MEM_POOL_SIZE or reduce "
+					"transfer size.");
+				return -ENOMEM;
+			}
+
+			if (is_tx) {
+				(void)memcpy(dev_data->dma_data_aligned_buffer,
+					     dev_data->dma_original_data_ptr, total_bytes);
+			}
+			data->data = dev_data->dma_data_aligned_buffer;
+		}
+	} else {
+		dev_data->dma_cache_aligned_size = total_bytes;
+	}
+
+#if defined(CONFIG_CACHE_MANAGEMENT) && defined(CONFIG_DCACHE)
+	/* Flush the cache for transmit operations:
+	 * Writes modified data(cache lines) back to physical memory.before DMA
+	 */
+	if (is_tx) {
+		sys_cache_data_flush_range((void *)data->data, dev_data->dma_cache_aligned_size);
+	}
+#endif
+
+	sdhc_set_blocksize(dev, (uint16_t)data->block_size);
+	sdhc_set_blockcount(dev, (uint16_t)data->blocks);
+
+	/* Configure hardware DMA (ADMA2)*/
+	rc = sdhc_dma_adma2_configure(dev, (uint8_t *)data->data, (int)total_bytes);
+	if (rc != 0) {
+		if (dev_data->dma_used_dynamic_aligned_buffer &&
+		    dev_data->dma_data_aligned_buffer != NULL) {
+			k_free(dev_data->dma_data_aligned_buffer);
+			dev_data->dma_data_aligned_buffer = NULL;
+		}
+		data->data = dev_data->dma_original_data_ptr;
+	}
+
+	return rc;
 }
 
 static bool sdhc_set_clock(const struct device *dev, int speed)
@@ -574,13 +759,96 @@ static void sdhc_init_module(const struct device *dev)
 	sdhc_regs->SDHC_NISIER = (SDHC_NISIER_CINS_Msk | SDHC_NISIER_CREM_Msk);
 }
 
+/**
+ * @brief Blocks on the transfer semaphore and handles the HW errors comprehensively
+ */
 static int sdhc_wait_completion(struct sdhc_mchp_data *const dev_data, k_timeout_t timeout)
 {
-	if (k_sem_take(&dev_data->transfer_done, timeout) == 0) {
-		return 0;
+	int rc = 0;
+	/* Establish an un-extendable absolute wait expiration */
+	k_timepoint_t xfer_deadline = sys_timepoint_calc(timeout);
+
+	/*
+	 * Keep waiting until the ISR flags indicate that both command and data
+	 * phases are no longer in progress. Safely absorbs multiple semaphore wakeup tokens or
+	 * combined ticks.
+	 */
+	while (dev_data->sdhc_obj.is_cmd_in_progress || dev_data->sdhc_obj.is_data_in_progress) {
+
+		/* Recalculate exactly how much time slice remains before the deadline */
+		k_timeout_t remaining = sys_timepoint_timeout(xfer_deadline);
+
+		/* If our absolute tracking deadline has expired, fail immediately */
+		if (K_TIMEOUT_EQ(remaining, K_NO_WAIT)) {
+			LOG_ERR("Timeout: Transfer completion flags did not clear within software "
+				"timeout");
+			return -ETIMEDOUT;
+		}
+
+		/* Sleep on the semaphore until the next phase concludes or a timeout hits */
+		rc = k_sem_take(&dev_data->transfer_done, remaining);
+		if (rc != 0) {
+			LOG_ERR("Timeout: Transfer completion flags did not clear within software "
+				"timeout");
+			return -ETIMEDOUT;
+		}
+
+		/* Early Break: If the ISR registered a bus exception, parse it immediately */
+		if (dev_data->sdhc_obj.error_status != 0U) {
+			break;
+		}
 	}
 
-	return -ETIMEDOUT;
+	/* Check accumulated register errors captured inside the ISR */
+	uint16_t hw_err = dev_data->sdhc_obj.error_status;
+
+	if (hw_err != 0U) {
+		/* Handle Timeout errors */
+		if ((hw_err & SDHC_EISTR_CMDTEO_Msk) != 0U) {
+			LOG_ERR("Hardware Error: Command Timeout (CMDTEO) detected");
+			return -ETIMEDOUT;
+		}
+		if ((hw_err & SDHC_EISTR_DATTEO_Msk) != 0U) {
+			LOG_ERR("Hardware Error: Data Timeout (DATTEO) detected");
+			return -ETIMEDOUT;
+		}
+
+		/* Handle Signal Integrity Failures (Bad CRC Math) */
+		if ((hw_err & SDHC_EISTR_CMDCRC_Msk) != 0U) {
+			LOG_ERR("Hardware Error: Command CRC Mismatch (CMDCRC)");
+			return -EBADMSG; /* Bad Message / Corrupted framing */
+		}
+		if ((hw_err & SDHC_EISTR_DATCRC_Msk) != 0U) {
+			LOG_ERR("Hardware Error: Data CRC Mismatch (DATCRC)");
+			return -EBADMSG;
+		}
+
+		/* Handle Protocol / Framing Format Failures */
+		if ((hw_err & SDHC_EISTR_CMDIDX_Msk) != 0U) {
+			LOG_ERR("Hardware Error: Command Index Mismatch (CMDIDX)");
+			return -EILSEQ; /* Illegal byte sequence / Protocol structural breakdown */
+		}
+		if ((hw_err & SDHC_EISTR_CMDEND_Msk) != 0U) {
+			LOG_ERR("Hardware Error: Command End Bit Violation (CMDEND)");
+			return -EILSEQ;
+		}
+		if ((hw_err & SDHC_EISTR_DATEND_Msk) != 0U) {
+			LOG_ERR("Hardware Error: Data End Bit Violation (DATEND)");
+			return -EILSEQ;
+		}
+
+		/* Handle DMA Descriptor / Memory Boundary Faults */
+		if ((hw_err & SDHC_EISTR_ADMA_Msk) != 0U) {
+			LOG_ERR("Hardware Error: ADMA Descriptor/Bus Error (ADMAE)");
+			return -EFAULT; /* Bad Memory Address / Descriptor Access Fault */
+		}
+
+		/* Fallback for completely unexpected hardware exceptions */
+		LOG_ERR("Hardware Error: General transaction failure (EISTR=0x%04x)", hw_err);
+		return -EIO;
+	}
+
+	return 0; /* Completed cleanly without any errors */
 }
 
 static int sdhc_init_props(const struct device *dev)
@@ -606,15 +874,40 @@ static int sdhc_init_props(const struct device *dev)
 	/* Get base clock from hardware capability register */
 	base_clk_freq_Mhz = (cap0 & (SDHC_CA0R_BASECLKF_Msk)) >> SDHC_CA0R_BASECLKF_Pos;
 	if (base_clk_freq_Mhz == 0U) {
-		/* Fallback: get clock rate from GCLK control subsystem */
+		/* Fallback: get clock rate from the GCLK control subsystem.
+		 * Make sure the GCLK(SDHC core) is enabled before reading its rate.
+		 * clock_control_get_rate() can succeed (ret == 0) yet report 0 Hz if the
+		 * clock tree is misconfigured or the rate cannot be resolved. A 0 Hz
+		 * rate would give divider 0 and clock the card at the undivided rate
+		 * instead of the required <=400 kHz identification speed, so treat it
+		 * as an error.
+		 */
+		if (!WAIT_FOR((clock_control_get_status(cfg->sdhc_clock.clock_dev,
+							cfg->sdhc_clock.gclk_sys) ==
+			       CLOCK_CONTROL_STATUS_ON),
+			      (SDHC_GCLK_READY_TIMEOUT_MS * 1000), k_busy_wait(1000))) {
+			LOG_ERR("SDHC GCLK did not come up within timeout, so failed to configure "
+				"base clock");
+			return -ETIMEDOUT;
+		}
+
 		ret = clock_control_get_rate(cfg->sdhc_clock.clock_dev, cfg->sdhc_clock.gclk_sys,
 					     &gclk_freq_hz);
 		if (ret != 0) {
 			LOG_ERR("Failed to read glck rate/freq %u", gclk_freq_hz);
-			return ret;
+			return -EIO;
 		}
+		if (gclk_freq_hz == 0U) {
+			LOG_ERR("SDHC GCLK reported ON but rate is 0 Hz");
+			return -EIO;
+		}
+		/* Base clock is GCLK/2. With CA1R.CLKMULT = 1 the controller runs in
+		 * programmable clock mode: MULTCLK = BASECLK * (CLKMULT + 1) = GCLK.
+		 */
 		base_clk_freq_Mhz = (gclk_freq_hz / 2);
 		base_clk_freq_Mhz = base_clk_freq_Mhz / MHZ(1); /* Convert Hz to MHz */
+		LOG_DBG("SDHC GCLK(sdhc core) rate: %u Hz", gclk_freq_hz);
+		LOG_DBG("SDHC base clock: %u MHz", base_clk_freq_Mhz);
 	}
 	dev_data->props.host_caps.sd_base_clk = base_clk_freq_Mhz;
 
@@ -670,10 +963,12 @@ static void sdhc_mchp_isr(const struct device *dev)
 	uint16_t nistr = 0U;
 	uint16_t eistr = 0U;
 	uint32_t xfer_status = 0U;
+	bool error = false;
 
 	nistr = sdhc_regs->SDHC_NISTR;
 	eistr = sdhc_regs->SDHC_EISTR;
 
+	/* Accumulate hardware error bits for the main thread to safely parse */
 	dev_data->sdhc_obj.error_status |= eistr;
 
 	if ((nistr & SDHC_NISTR_CINS_Msk) != 0U) {
@@ -684,6 +979,22 @@ static void sdhc_mchp_isr(const struct device *dev)
 		xfer_status |= SDHC_XFER_STATUS_CARD_REMOVED;
 	}
 
+	/* Handle hardware fault/error interrupts */
+	if ((nistr & SDHC_NISTR_ERRINT_Msk) != 0U) {
+		error = true;
+		if (dev_data->sdhc_obj.is_cmd_in_progress) {
+			sdhc_reset_error(dev, SDHC_RESET_CMD);
+			dev_data->sdhc_obj.is_cmd_in_progress = false;
+			xfer_status |= SDHC_XFER_STATUS_CMD_COMPLETED;
+		}
+		if (dev_data->sdhc_obj.is_data_in_progress) {
+			sdhc_reset_error(dev, SDHC_RESET_DAT);
+			dev_data->sdhc_obj.is_data_in_progress = false;
+			xfer_status |= SDHC_XFER_STATUS_DATA_COMPLETED;
+		}
+	}
+
+	/* Handle command completion interrupts */
 	if (dev_data->sdhc_obj.is_cmd_in_progress == true) {
 		bool cmd_done = false;
 
@@ -709,46 +1020,33 @@ static void sdhc_mchp_isr(const struct device *dev)
 			cmd_done = (dev_data->sdhc_obj.cmdc_received ||
 				    dev_data->sdhc_obj.trfc_received);
 		}
-
-		if ((nistr & SDHC_NISTR_ERRINT_Msk) != 0U) {
-			if ((eistr & (SDHC_EISTR_CMDTEO_Msk | SDHC_EISTR_CMDCRC_Msk |
-				      SDHC_EISTR_CMDEND_Msk | SDHC_EISTR_CMDIDX_Msk)) != 0U) {
-				sdhc_reset_error(dev, SDHC_RESET_CMD);
-			}
-		}
 		if (cmd_done == true) {
 			dev_data->sdhc_obj.is_cmd_in_progress = false;
 			xfer_status |= SDHC_XFER_STATUS_CMD_COMPLETED;
 		}
 	}
-
-	if (dev_data->sdhc_obj.is_data_in_progress == true) {
-		if ((nistr &
-		     (SDHC_NISTR_TRFC_Msk | SDHC_NISTR_DMAINT_Msk | SDHC_NISTR_ERRINT_Msk)) != 0U) {
-			if ((nistr & SDHC_NISTR_ERRINT_Msk) != 0U) {
-				if ((eistr & (SDHC_EISTR_DATTEO_Msk | SDHC_EISTR_DATCRC_Msk |
-					      SDHC_EISTR_DATEND_Msk)) != 0U) {
-					sdhc_reset_error(dev, SDHC_RESET_DAT);
-				}
-			}
-
-			if ((nistr & SDHC_NISTR_TRFC_Msk) != 0U) {
-				/* Clear the data timeout error as transfer complete has higher */
-				/* priority */
-				dev_data->sdhc_obj.error_status &=
-					(uint16_t)(~SDHC_EISTR_DATTEO_Msk);
-			}
-
-			dev_data->sdhc_obj.is_data_in_progress = false;
-			xfer_status |= SDHC_XFER_STATUS_DATA_COMPLETED;
-		}
+	/* Handle data transfer completion interrupts */
+	if (dev_data->sdhc_obj.is_data_in_progress && (nistr & SDHC_NISTR_TRFC_Msk) != 0U) {
+		dev_data->sdhc_obj.is_data_in_progress = false;
+		xfer_status |= SDHC_XFER_STATUS_DATA_COMPLETED;
+	}
+	/* Clear the Data Timeout error if TRFC has fired, since the data transfer completed
+	 * successfully
+	 */
+	/* This safely clears data timeouts during sequential transfers */
+	if ((nistr & SDHC_NISTR_TRFC_Msk) != 0U) {
+		dev_data->sdhc_obj.error_status &= (uint16_t)(~SDHC_EISTR_DATTEO_Msk);
 	}
 
+	/* Clear evaluated interrupt state bits */
 	sdhc_regs->SDHC_NISTR = nistr;
 	sdhc_regs->SDHC_EISTR = eistr;
 
-	if ((xfer_status != 0U) && (dev_data->sdhc_obj.is_data_in_progress == false) &&
-	    (dev_data->sdhc_obj.is_cmd_in_progress == false)) {
+	/*
+	 * Synchronization Guard: Trigger a semaphore wakeup token if an error occurred
+	 * or one transaction(command or data complete) is finished.
+	 */
+	if (error || (xfer_status != 0U)) {
 		k_sem_give(&dev_data->transfer_done);
 	}
 }
@@ -787,17 +1085,20 @@ static int sdhc_mchp_request(const struct device *dev, struct sdhc_command *cmd,
 		}
 		xfer_timeout = K_TIMEOUT_SUM(cmd_timeout, data_timeout);
 
-		sdhc_set_blocksize(dev, (uint16_t)data->block_size);
-		sdhc_set_blockcount(dev, (uint16_t)data->blocks);
-
-		rc = sdhc_dma_setup(dev, (uint8_t *)data->data, data->blocks * data->block_size);
+		rc = sdhc_dma_setup(dev, cmd, data);
 		if (rc != 0) {
+			LOG_ERR("Error: Failed to setup DMA for data transfer: %d", rc);
 			return rc;
 		}
 
 		transfer_flags.is_data_present = true;
 		if (cmd->opcode == SDIO_RW_EXTENDED) {
 			transfer_flags.transfer_type = SDHC_DATA_TRANSFER_SDIO_BLOCK;
+			if (IS_BIT_SET(cmd->arg, SDIO_CMD_ARG_RW_SHIFT)) {
+				transfer_flags.transfer_dir = SDHC_DATA_TRANSFER_DIR_WRITE;
+			} else {
+				transfer_flags.transfer_dir = SDHC_DATA_TRANSFER_DIR_READ;
+			}
 		} else {
 			transfer_flags.transfer_type = SDHC_DATA_TRANSFER_TYPE_SINGLE;
 		}
@@ -809,24 +1110,30 @@ static int sdhc_mchp_request(const struct device *dev, struct sdhc_command *cmd,
 
 	sdhc_reset_error(dev, SDHC_RESET_CMD | SDHC_RESET_DAT);
 
-	/* Drain stale completions before issuing the command */
-	while (k_sem_count_get(&dev_data->transfer_done) != 0U) {
-		k_sem_take(&dev_data->transfer_done, K_NO_WAIT);
-	}
+	/*
+	 * Flush stale completion tokens from previous operations
+	 * before issuing the command
+	 */
+	k_sem_reset(&dev_data->transfer_done);
+
+	/* Clear the previous HW errors */
+	dev_data->sdhc_obj.error_status = 0U;
 
 	resp_type = (uint8_t)(cmd->response_type & SDHC_NATIVE_RESPONSE_MASK);
 	sdhc_send_command(dev, op, cmd->arg, resp_type, transfer_flags);
 
+	/*
+	 * Wait for completion: Pass the timeout directly.
+	 * Spurious wakeup filtering and timepoint calculations happen inside this function.
+	 */
 	rc = sdhc_wait_completion(dev_data, xfer_timeout);
 	if (rc != 0) {
-		LOG_ERR("Timeout: Transfer completion flags did not clear");
+		LOG_ERR("SDHC command %d transaction timed out or failed (%d)", op, rc);
 		k_mutex_unlock(&dev_data->bus_mutex);
-		return -ETIMEDOUT;
-	}
-	if (dev_data->sdhc_obj.is_cmd_in_progress || dev_data->sdhc_obj.is_data_in_progress) {
-		LOG_ERR("Timeout: Command/Data completion flag did not clear");
-		k_mutex_unlock(&dev_data->bus_mutex);
-		return -ETIMEDOUT;
+		if (data != NULL) {
+			sdhc_dma_teardown(dev, cmd, data);
+		}
+		return rc;
 	}
 
 	sdhc_read_response(dev, SDHC_READ_RESP_REG_ALL, dev_data->sdhc_response);
@@ -852,6 +1159,11 @@ static int sdhc_mchp_request(const struct device *dev, struct sdhc_command *cmd,
 		cmd->response[1] = dev_data->sdhc_response[1];
 		cmd->response[2] = dev_data->sdhc_response[2];
 		cmd->response[3] = dev_data->sdhc_response[3];
+	}
+
+	/* DMA finalisation */
+	if (data != NULL) {
+		sdhc_dma_teardown(dev, cmd, data);
 	}
 
 	/* Parse SCR to determine card's CMD23 support */
@@ -1039,8 +1351,9 @@ static DEVICE_API(sdhc, sdhc_mchp_api) = {
  * cache line with other data, preventing DMA coherency faults on Cortex-M4.
  */
 #define SDHC_MCHP_DATA_DEFN(n)                                                                     \
-	static struct sdhc_adma_descr __aligned(32)                                                \
-	sdhc_mchp_dma_desc_##n[(SDHC_ADMA2_DESC_TABLE_SIZE_CACHE_ALIGN / 8U)];                     \
+	static struct sdhc_adma_descr                                                              \
+		__aligned(SDHC_MCHP_AGNOSTIC_ALIGN_SIZE) sdhc_mchp_dma_desc_##n[(                  \
+			SDHC_MCHP_DESC_TABLE_SIZE_CACHE_ALIGN(n) / SDHC_ADMA2_DESC_LINE_SIZE)];    \
 	static struct sdhc_mchp_data sdhc_mchp_data_##n = {                                        \
 		.dma_desc_table = sdhc_mchp_dma_desc_##n,                                          \
 		.card_supports_cmd23 = false,                                                      \
