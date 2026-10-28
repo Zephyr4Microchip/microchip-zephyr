@@ -110,6 +110,7 @@
 		xosc-frequency = <12000000>;
 		xosc-en = <1>;
 		xosc-xtal-en = <1>;
+		xosc-usb-ref-clock-div = "div1";
 	};
 
 	dpll: dpll {
@@ -208,6 +209,11 @@
 			subsystem = <CLOCK_MCHP_MCLKPERIPH_ID_SERCOM2>;
 			mclk-en = <1>;
 		};
+
+		husb0 {
+			subsystem = <CLOCK_MCHP_MCLKPERIPH_ID_HUSB0>;
+			mclk-en = <1>;
+		};
 	};
 };
 
@@ -257,4 +263,16 @@ i2c0: &sercom9 {
 		address-width = <8>;
 		timeout = <5>;
 	};
+};
+
+zephyr_udc0: &hsusb0 {
+	status = "okay";
+};
+
+zephyr_udc1: &hsusb1 {
+	/* USBHS1 (Type-C connector) is disabled – USBHS0 (hsusb0, Micro A/B
+	 * connector) is used as the primary USB device controller via the
+	 * zephyr_udc0 alias above.
+	 */
+	status = "disabled";
 };
